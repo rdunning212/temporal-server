@@ -216,10 +216,22 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 	ctx context.Context,
 	request *matchingservice.DeleteNexusEndpointRequest,
 ) (*matchingservice.DeleteNexusEndpointResponse, error) {
+	resp, _, err := m.deleteNexusEndpointInternal(ctx, request)
+	return resp, err
+}
+
+// deleteNexusEndpointInternal deletes the endpoint and returns the response alongside the deleted
+// entry. The deleted entry is used by the matching engine to build the DELETE replication task with
+// the entry's HLC clock, so that standby clusters can record a tombstone even when the DELETE
+// replication event arrives before the CREATE.
+func (m *nexusEndpointClient) deleteNexusEndpointInternal(
+	ctx context.Context,
+	request *matchingservice.DeleteNexusEndpointRequest,
+) (*matchingservice.DeleteNexusEndpointResponse, *persistencespb.NexusEndpointEntry, error) {
 	if !m.hasLoadedEndpoints.Load() {
 		// Endpoints must be loaded into memory before deletion so that the endpoint UUID can be looked up
 		if err := m.loadEndpoints(ctx); err != nil {
-			return nil, fmt.Errorf("error loading nexus endpoints cache: %w", err)
+			return nil, nil, fmt.Errorf("error loading nexus endpoints cache: %w", err)
 		}
 	}
 
@@ -228,7 +240,7 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 
 	entry, ok := m.endpointsByID[request.Id]
 	if !ok {
-		return nil, serviceerror.NewNotFoundf("error deleting nexus endpoint with ID: %v", request.Id)
+		return nil, nil, serviceerror.NewNotFoundf("error deleting nexus endpoint with ID: %v", request.Id)
 	}
 
 	err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
@@ -236,7 +248,7 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 		ID:                    entry.Id,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	m.tableVersion++
@@ -249,7 +261,7 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 	m.tableVersionChanged = make(chan struct{})
 	close(ch)
 
-	return &matchingservice.DeleteNexusEndpointResponse{}, nil
+	return &matchingservice.DeleteNexusEndpointResponse{}, entry, nil
 }
 
 // ApplyCreateReplicationEvent applies a replicated endpoint creation from a remote cluster.
@@ -406,7 +418,10 @@ func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
 }
 
 // ApplyDeleteReplicationEvent applies a replicated endpoint deletion from a remote cluster.
-// Idempotent: if the endpoint does not exist locally, returns nil.
+// Always records a tombstone using the clock from the replication task entry, regardless of
+// whether the endpoint exists locally. This handles the DELETE-before-CREATE delivery scenario:
+// if a CREATE replication event arrives later with a clock ≤ the tombstone clock, it is discarded.
+// The entry in the replication task must carry the deleted endpoint's HLC clock.
 func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	ctx context.Context,
 	entry *persistencespb.NexusEndpointEntry,
@@ -420,9 +435,20 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	m.Lock()
 	defer m.Unlock()
 
+	// Always record a tombstone from the replication task's clock.
+	// This is necessary even when the endpoint is not present locally (DELETE arrived before CREATE).
+	if entry.GetEndpoint().GetClock() != nil {
+		if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
+			// Safety guard: clear the map rather than grow without bound.
+			// In practice this limit is never reached; endpoints are cluster-global and few.
+			m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
+		}
+		m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
+	}
+
 	existing, ok := m.endpointsByID[entry.GetId()]
 	if !ok {
-		// Already deleted or never existed on this cluster — idempotent.
+		// Not present locally — tombstone recorded above; nothing else to do.
 		return nil
 	}
 
@@ -432,15 +458,6 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	}); err != nil {
 		return fmt.Errorf("error deleting replicated nexus endpoint: %w", err)
 	}
-
-	// Record a tombstone so that a stale UPDATE replication event arriving after this DELETE
-	// does not resurrect the endpoint via applyUpsertLocked.
-	if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
-		// Safety guard: clear the map rather than grow without bound.
-		// In practice this limit is never reached; endpoints are cluster-global and few.
-		m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
-	}
-	m.deletedClocks[existing.GetId()] = existing.GetEndpoint().GetClock()
 
 	m.tableVersion++
 	delete(m.endpointsByID, existing.GetId())

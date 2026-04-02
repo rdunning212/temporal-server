@@ -2286,7 +2286,11 @@ func (e *matchingEngineImpl) UpdateNexusEndpoint(ctx context.Context, request *m
 
 func (e *matchingEngineImpl) DeleteNexusEndpoint(ctx context.Context, request *matchingservice.DeleteNexusEndpointRequest) (*matchingservice.DeleteNexusEndpointResponse, error) {
 	// Write API, let persistence verify table ownership.
-	res, err := e.nexusEndpointClient.DeleteNexusEndpoint(ctx, request)
+	// Use deleteNexusEndpointInternal to atomically obtain the deleted entry alongside the response,
+	// so the DELETE replication task carries the endpoint's HLC clock. Standby clusters use that
+	// clock to record a tombstone even when the DELETE arrives before the corresponding CREATE,
+	// preventing the CREATE from later resurrecting an already-deleted endpoint.
+	res, deletedEntry, err := e.nexusEndpointClient.deleteNexusEndpointInternal(ctx, request)
 	if err != nil {
 		e.logger.Error("Failed to delete Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetId()))
 	} else {
@@ -2294,7 +2298,7 @@ func (e *matchingEngineImpl) DeleteNexusEndpoint(ctx context.Context, request *m
 		e.publishNexusEndpointReplicationTask(
 			ctx,
 			enumsspb.NEXUS_ENDPOINT_OPERATION_DELETE,
-			&persistencespb.NexusEndpointEntry{Id: request.GetId()},
+			deletedEntry,
 		)
 	}
 	return res, err
