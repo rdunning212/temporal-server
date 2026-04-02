@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.temporal.io/api/serviceerror"
+	clockspb "go.temporal.io/server/api/clock/v1"
 	"go.temporal.io/server/api/matchingservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/backoff"
@@ -27,6 +28,11 @@ import (
 const (
 	// loadEndpointsPageSize is the page size to use when initially loading endpoints from persistence
 	loadEndpointsPageSize = 100
+
+	// maxDeletedEndpointTombstones caps the in-memory tombstone map to prevent unbounded growth.
+	// Nexus endpoints are cluster-global resources; the practical number of endpoints is small,
+	// so this cap is a safety guard only.
+	maxDeletedEndpointTombstones = 10000
 )
 
 type (
@@ -62,6 +68,12 @@ type (
 		endpointsByName     map[string]*persistencespb.NexusEndpointEntry
 		tableVersionChanged chan struct{}
 
+		// deletedClocks tracks the HLC clock of endpoints at the time they were deleted via replication.
+		// This tombstone map prevents a stale UPDATE replication event that arrives after a DELETE
+		// from resurrecting the endpoint via applyUpsertLocked.
+		// Capped at maxDeletedEndpointTombstones; cleared entirely on overflow (safety guard only).
+		deletedClocks map[string]*clockspb.HybridLogicalClock
+
 		refreshLock              sync.Mutex // protects refreshHandle which is updated whenever node gains/loses ownership
 		refreshHandle            *goro.Handle
 		endpointsRefreshInterval dynamicconfig.DurationPropertyFn
@@ -78,6 +90,7 @@ func newEndpointClient(
 		endpointsRefreshInterval: endpointsRefreshInterval,
 		persistence:              persistence,
 		tableVersionChanged:      make(chan struct{}),
+		deletedClocks:            make(map[string]*clockspb.HybridLogicalClock),
 	}
 }
 
@@ -330,8 +343,18 @@ func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
 
 	existing, exists := m.endpointsByID[entry.GetId()]
 	if !exists {
-		// Endpoint not found locally — the create replication event may not have arrived yet,
-		// or this is out-of-order delivery. Fall through to create with insert semantics.
+		// Endpoint not found locally. Two possible explanations:
+		// (a) Out-of-order delivery: CREATE has not arrived yet — safe to upsert.
+		// (b) Stale UPDATE after DELETE: a DELETE was already applied and this UPDATE arrived late.
+		//     In this case we must NOT resurrect the deleted endpoint.
+		if tombstoneClock, deleted := m.deletedClocks[entry.GetId()]; deleted {
+			if !hlc.Greater(entry.GetEndpoint().GetClock(), tombstoneClock) {
+				// Update is not newer than the deletion — discard to avoid resurrection.
+				return nil
+			}
+			// Update is newer than the deletion (intentional recreation) — remove tombstone and proceed.
+			delete(m.deletedClocks, entry.GetId())
+		}
 		return m.applyUpsertLocked(ctx, entry)
 	}
 
@@ -398,6 +421,15 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	}); err != nil {
 		return fmt.Errorf("error deleting replicated nexus endpoint: %w", err)
 	}
+
+	// Record a tombstone so that a stale UPDATE replication event arriving after this DELETE
+	// does not resurrect the endpoint via applyUpsertLocked.
+	if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
+		// Safety guard: clear the map rather than grow without bound.
+		// In practice this limit is never reached; endpoints are cluster-global and few.
+		m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
+	}
+	m.deletedClocks[existing.GetId()] = existing.GetEndpoint().GetClock()
 
 	m.tableVersion++
 	delete(m.endpointsByID, existing.GetId())
