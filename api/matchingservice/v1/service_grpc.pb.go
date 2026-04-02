@@ -41,6 +41,7 @@ const (
 	MatchingService_GetWorkerVersioningRules_FullMethodName               = "/temporal.server.api.matchingservice.v1.MatchingService/GetWorkerVersioningRules"
 	MatchingService_SyncDeploymentUserData_FullMethodName                 = "/temporal.server.api.matchingservice.v1.MatchingService/SyncDeploymentUserData"
 	MatchingService_ApplyTaskQueueUserDataReplicationEvent_FullMethodName = "/temporal.server.api.matchingservice.v1.MatchingService/ApplyTaskQueueUserDataReplicationEvent"
+	MatchingService_ApplyNexusEndpointReplicationEvent_FullMethodName     = "/temporal.server.api.matchingservice.v1.MatchingService/ApplyNexusEndpointReplicationEvent"
 	MatchingService_GetBuildIdTaskQueueMapping_FullMethodName             = "/temporal.server.api.matchingservice.v1.MatchingService/GetBuildIdTaskQueueMapping"
 	MatchingService_ForceLoadTaskQueuePartition_FullMethodName            = "/temporal.server.api.matchingservice.v1.MatchingService/ForceLoadTaskQueuePartition"
 	MatchingService_ForceUnloadTaskQueue_FullMethodName                   = "/temporal.server.api.matchingservice.v1.MatchingService/ForceUnloadTaskQueue"
@@ -130,6 +131,8 @@ type MatchingServiceClient interface {
 	SyncDeploymentUserData(ctx context.Context, in *SyncDeploymentUserDataRequest, opts ...grpc.CallOption) (*SyncDeploymentUserDataResponse, error)
 	// Apply a user data replication event.
 	ApplyTaskQueueUserDataReplicationEvent(ctx context.Context, in *ApplyTaskQueueUserDataReplicationEventRequest, opts ...grpc.CallOption) (*ApplyTaskQueueUserDataReplicationEventResponse, error)
+	// Apply a Nexus endpoint replication event from a remote cluster.
+	ApplyNexusEndpointReplicationEvent(ctx context.Context, in *ApplyNexusEndpointReplicationEventRequest, opts ...grpc.CallOption) (*ApplyNexusEndpointReplicationEventResponse, error)
 	// Gets all task queue names mapped to a given build ID
 	GetBuildIdTaskQueueMapping(ctx context.Context, in *GetBuildIdTaskQueueMappingRequest, opts ...grpc.CallOption) (*GetBuildIdTaskQueueMappingResponse, error)
 	// Force loading a task queue partition. Used by matching node owning root partition.
@@ -390,6 +393,15 @@ func (c *matchingServiceClient) ApplyTaskQueueUserDataReplicationEvent(ctx conte
 	return out, nil
 }
 
+func (c *matchingServiceClient) ApplyNexusEndpointReplicationEvent(ctx context.Context, in *ApplyNexusEndpointReplicationEventRequest, opts ...grpc.CallOption) (*ApplyNexusEndpointReplicationEventResponse, error) {
+	out := new(ApplyNexusEndpointReplicationEventResponse)
+	err := c.cc.Invoke(ctx, MatchingService_ApplyNexusEndpointReplicationEvent_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *matchingServiceClient) GetBuildIdTaskQueueMapping(ctx context.Context, in *GetBuildIdTaskQueueMappingRequest, opts ...grpc.CallOption) (*GetBuildIdTaskQueueMappingResponse, error) {
 	out := new(GetBuildIdTaskQueueMappingResponse)
 	err := c.cc.Invoke(ctx, MatchingService_GetBuildIdTaskQueueMapping_FullMethodName, in, out, opts...)
@@ -565,6 +577,8 @@ type MatchingServiceServer interface {
 	SyncDeploymentUserData(context.Context, *SyncDeploymentUserDataRequest) (*SyncDeploymentUserDataResponse, error)
 	// Apply a user data replication event.
 	ApplyTaskQueueUserDataReplicationEvent(context.Context, *ApplyTaskQueueUserDataReplicationEventRequest) (*ApplyTaskQueueUserDataReplicationEventResponse, error)
+	// Apply a Nexus endpoint replication event from a remote cluster.
+	ApplyNexusEndpointReplicationEvent(context.Context, *ApplyNexusEndpointReplicationEventRequest) (*ApplyNexusEndpointReplicationEventResponse, error)
 	// Gets all task queue names mapped to a given build ID
 	GetBuildIdTaskQueueMapping(context.Context, *GetBuildIdTaskQueueMappingRequest) (*GetBuildIdTaskQueueMappingResponse, error)
 	// Force loading a task queue partition. Used by matching node owning root partition.
@@ -695,6 +709,9 @@ func (UnimplementedMatchingServiceServer) SyncDeploymentUserData(context.Context
 }
 func (UnimplementedMatchingServiceServer) ApplyTaskQueueUserDataReplicationEvent(context.Context, *ApplyTaskQueueUserDataReplicationEventRequest) (*ApplyTaskQueueUserDataReplicationEventResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ApplyTaskQueueUserDataReplicationEvent not implemented")
+}
+func (UnimplementedMatchingServiceServer) ApplyNexusEndpointReplicationEvent(context.Context, *ApplyNexusEndpointReplicationEventRequest) (*ApplyNexusEndpointReplicationEventResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplyNexusEndpointReplicationEvent not implemented")
 }
 func (UnimplementedMatchingServiceServer) GetBuildIdTaskQueueMapping(context.Context, *GetBuildIdTaskQueueMappingRequest) (*GetBuildIdTaskQueueMappingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBuildIdTaskQueueMapping not implemented")
@@ -1120,6 +1137,24 @@ func _MatchingService_ApplyTaskQueueUserDataReplicationEvent_Handler(srv interfa
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MatchingService_ApplyNexusEndpointReplicationEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyNexusEndpointReplicationEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MatchingServiceServer).ApplyNexusEndpointReplicationEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MatchingService_ApplyNexusEndpointReplicationEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MatchingServiceServer).ApplyNexusEndpointReplicationEvent(ctx, req.(*ApplyNexusEndpointReplicationEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _MatchingService_GetBuildIdTaskQueueMapping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetBuildIdTaskQueueMappingRequest)
 	if err := dec(in); err != nil {
@@ -1408,6 +1443,10 @@ var MatchingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApplyTaskQueueUserDataReplicationEvent",
 			Handler:    _MatchingService_ApplyTaskQueueUserDataReplicationEvent_Handler,
+		},
+		{
+			MethodName: "ApplyNexusEndpointReplicationEvent",
+			Handler:    _MatchingService_ApplyNexusEndpointReplicationEvent_Handler,
 		},
 		{
 			MethodName: "GetBuildIdTaskQueueMapping",

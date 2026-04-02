@@ -41,6 +41,21 @@ func (c *retryableClient) AddWorkflowTask(
 	return resp, err
 }
 
+func (c *retryableClient) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+	var resp *matchingservice.ApplyNexusEndpointReplicationEventResponse
+	op := func(ctx context.Context) error {
+		var err error
+		resp, err = c.client.ApplyNexusEndpointReplicationEvent(ctx, request, opts...)
+		return err
+	}
+	err := backoff.ThrottleRetryContext(ctx, op, c.policy, c.isRetryable)
+	return resp, err
+}
+
 func (c *retryableClient) ApplyTaskQueueUserDataReplicationEvent(
 	ctx context.Context,
 	request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest,

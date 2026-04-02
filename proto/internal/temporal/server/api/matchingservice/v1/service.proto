@@ -109,6 +109,9 @@ service MatchingService {
     // Apply a user data replication event.
     rpc ApplyTaskQueueUserDataReplicationEvent (ApplyTaskQueueUserDataReplicationEventRequest) returns (ApplyTaskQueueUserDataReplicationEventResponse) {}
 
+    // Apply a Nexus endpoint replication event from a remote cluster.
+    rpc ApplyNexusEndpointReplicationEvent (ApplyNexusEndpointReplicationEventRequest) returns (ApplyNexusEndpointReplicationEventResponse) {}
+
     // Gets all task queue names mapped to a given build ID
     rpc GetBuildIdTaskQueueMapping (GetBuildIdTaskQueueMappingRequest) returns (GetBuildIdTaskQueueMappingResponse) {}
     // Force loading a task queue partition. Used by matching node owning root partition.

@@ -9,6 +9,20 @@ import (
 	"google.golang.org/grpc"
 )
 
+func (c *metricClient) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+	opts ...grpc.CallOption,
+) (_ *matchingservice.ApplyNexusEndpointReplicationEventResponse, retError error) {
+
+	metricsHandler, startTime := c.startMetricsRecording(ctx, "MatchingClientApplyNexusEndpointReplicationEvent")
+	defer func() {
+		c.finishMetricsRecording(metricsHandler, startTime, retError)
+	}()
+
+	return c.client.ApplyNexusEndpointReplicationEvent(ctx, request, opts...)
+}
+
 func (c *metricClient) ApplyTaskQueueUserDataReplicationEvent(
 	ctx context.Context,
 	request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest,
