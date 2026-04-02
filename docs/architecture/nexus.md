@@ -38,8 +38,8 @@ Complete a Nexus operation via callback.
 Since Nexus is a new feature with experimental APIs and has not been exercised in production, it is disabled by default
 until it is considered stable.
 
-Nexus is only supported in single cluster setups for the time being due to endpoint registry replication not being implemented
-yet.
+Nexus endpoint registry replication is supported across clusters. Endpoints created on the active cluster are
+automatically replicated to standby clusters via the namespace replication queue.
 
 ## Enabling Nexus
 
@@ -129,8 +129,8 @@ The endpoints table is versioned where every write to the table increments its v
 purposes: to ensure writes are serialized, and to determine whether a node has an up-to-date view of the table when long
 polling.
 
-> ⚠️  At the time of writing, replication for the registry is not implemented and Nexus shouldn't be used in multi cluster
-setups. Replication will be implemented at a later time.⚠️
+> Endpoint registry replication is implemented via the namespace replication queue. Endpoints are automatically
+replicated across clusters using the `REPLICATION_TASK_TYPE_NEXUS_ENDPOINT` task type.
 
 ## Outbound Task Queue
 
