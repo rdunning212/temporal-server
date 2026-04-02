@@ -275,6 +275,17 @@ func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
 		return nil
 	}
 
+	// Tombstone check: if this endpoint ID was previously deleted via replication, a stale CREATE
+	// replay must not resurrect it. Only proceed if the incoming CREATE is strictly newer than
+	// the deletion clock (intentional recreation), otherwise discard.
+	if tombstoneClock, deleted := m.deletedClocks[entry.GetId()]; deleted {
+		if !hlc.Greater(entry.GetEndpoint().GetClock(), tombstoneClock) {
+			return nil
+		}
+		// CREATE is newer than the deletion — intentional recreation, remove tombstone.
+		delete(m.deletedClocks, entry.GetId())
+	}
+
 	// Name conflict check: if a local endpoint has the same name but different UUID,
 	// use HLC clock comparison to determine the winner.
 	if existing, nameConflict := m.endpointsByName[entry.GetEndpoint().GetSpec().GetName()]; nameConflict {
