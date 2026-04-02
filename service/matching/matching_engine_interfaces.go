@@ -27,6 +27,7 @@ type (
 		GetTaskQueueUserData(ctx context.Context, request *matchingservice.GetTaskQueueUserDataRequest) (*matchingservice.GetTaskQueueUserDataResponse, error)
 		SyncDeploymentUserData(ctx context.Context, request *matchingservice.SyncDeploymentUserDataRequest) (*matchingservice.SyncDeploymentUserDataResponse, error)
 		ApplyTaskQueueUserDataReplicationEvent(ctx context.Context, request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest) (*matchingservice.ApplyTaskQueueUserDataReplicationEventResponse, error)
+		ApplyNexusEndpointReplicationEvent(ctx context.Context, request *matchingservice.ApplyNexusEndpointReplicationEventRequest) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error)
 		GetBuildIdTaskQueueMapping(ctx context.Context, request *matchingservice.GetBuildIdTaskQueueMappingRequest) (*matchingservice.GetBuildIdTaskQueueMappingResponse, error)
 		ForceUnloadTaskQueuePartition(ctx context.Context, request *matchingservice.ForceUnloadTaskQueuePartitionRequest) (*matchingservice.ForceUnloadTaskQueuePartitionResponse, error)
 		ForceUnloadTaskQueue(ctx context.Context, request *matchingservice.ForceUnloadTaskQueueRequest) (*matchingservice.ForceUnloadTaskQueueResponse, error)

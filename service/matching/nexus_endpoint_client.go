@@ -239,6 +239,210 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 	return &matchingservice.DeleteNexusEndpointResponse{}, nil
 }
 
+// ApplyCreateReplicationEvent applies a replicated endpoint creation from a remote cluster.
+// The endpoint entry retains the original UUID from the source cluster.
+// If a local endpoint with the same UUID exists, this is a duplicate and is skipped.
+// If a local endpoint with the same name but different UUID exists, HLC clock comparison
+// determines which one wins (last-writer-wins).
+func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	// Duplicate check: if endpoint with same UUID already exists, skip (idempotent).
+	if _, exists := m.endpointsByID[entry.GetId()]; exists {
+		return nil
+	}
+
+	// Name conflict check: if a local endpoint has the same name but different UUID,
+	// use HLC clock comparison to determine the winner.
+	if existing, nameConflict := m.endpointsByName[entry.GetEndpoint().GetSpec().GetName()]; nameConflict {
+		if hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
+			// Replicated endpoint wins — delete the local one first.
+			if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
+				LastKnownTableVersion: m.tableVersion,
+				ID:                    existing.GetId(),
+			}); err != nil {
+				return fmt.Errorf("error deleting conflicting local endpoint during replication: %w", err)
+			}
+			m.tableVersion++
+			delete(m.endpointsByID, existing.GetId())
+			delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+			m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
+				return e.GetId() == existing.GetId()
+			})
+		} else {
+			// Local endpoint wins — skip the replicated endpoint.
+			return nil
+		}
+	}
+
+	// Persist the replicated endpoint with Version: 0 (insert) and the source UUID.
+	replicatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  0,
+		Id:       entry.GetId(),
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 replicatedEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
+	}
+
+	replicatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[replicatedEntry.Id] = replicatedEntry
+	m.endpointsByName[replicatedEntry.Endpoint.Spec.Name] = replicatedEntry
+	m.insertEndpointLocked(replicatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// ApplyUpdateReplicationEvent applies a replicated endpoint update from a remote cluster.
+// Looks up the endpoint by UUID. If not found, falls through to create (handles out-of-order delivery).
+// Uses HLC clock comparison to detect stale updates.
+func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	existing, exists := m.endpointsByID[entry.GetId()]
+	if !exists {
+		// Endpoint not found locally — the create replication event may not have arrived yet,
+		// or this is out-of-order delivery. Fall through to create with insert semantics.
+		return m.applyUpsertLocked(ctx, entry)
+	}
+
+	// Stale update check: if the replicated clock is not newer than the local clock, skip.
+	if !hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
+		return nil
+	}
+
+	// Apply the update using the LOCAL version (not the source version) for optimistic concurrency.
+	updatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  existing.Version,
+		Id:       existing.Id,
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 updatedEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("error persisting replicated nexus endpoint update: %w", err)
+	}
+
+	updatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[updatedEntry.Id] = updatedEntry
+	// If the name changed, clean up the old name mapping.
+	if existing.GetEndpoint().GetSpec().GetName() != updatedEntry.GetEndpoint().GetSpec().GetName() {
+		delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+	}
+	m.endpointsByName[updatedEntry.Endpoint.Spec.Name] = updatedEntry
+	m.insertEndpointLocked(updatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// ApplyDeleteReplicationEvent applies a replicated endpoint deletion from a remote cluster.
+// Idempotent: if the endpoint does not exist locally, returns nil.
+func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	existing, ok := m.endpointsByID[entry.GetId()]
+	if !ok {
+		// Already deleted or never existed on this cluster — idempotent.
+		return nil
+	}
+
+	if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		ID:                    existing.GetId(),
+	}); err != nil {
+		return fmt.Errorf("error deleting replicated nexus endpoint: %w", err)
+	}
+
+	m.tableVersion++
+	delete(m.endpointsByID, existing.GetId())
+	delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+	m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
+		return e.GetId() == existing.GetId()
+	})
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// applyUpsertLocked inserts a replicated endpoint entry. Must be called with write lock held.
+func (m *nexusEndpointClient) applyUpsertLocked(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	replicatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  0, // insert semantics
+		Id:       entry.GetId(),
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 replicatedEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
+	}
+
+	replicatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[replicatedEntry.Id] = replicatedEntry
+	m.endpointsByName[replicatedEntry.Endpoint.Spec.Name] = replicatedEntry
+	m.insertEndpointLocked(replicatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
 func (m *nexusEndpointClient) ListNexusEndpoints(
 	ctx context.Context,
 	request *matchingservice.ListNexusEndpointsRequest,

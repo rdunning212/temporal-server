@@ -197,6 +197,11 @@ func (p *replicationMessageProcessor) putNamespaceReplicationTaskToDLQ(
 				metrics.ReplicationTaskTypeTag(task.TaskType),
 				metrics.NamespaceTag(ns.Name().String()),
 			)
+	case enumsspb.REPLICATION_TASK_TYPE_NEXUS_ENDPOINT:
+		metrics.NamespaceReplicationEnqueueDLQCount.With(p.metricsHandler).
+			Record(1,
+				metrics.ReplicationTaskTypeTag(task.TaskType),
+			)
 	default:
 		return serviceerror.NewUnavailable(
 			fmt.Sprintf("Namespace replication task type not supported: %v", task.TaskType),
@@ -235,6 +240,14 @@ func (p *replicationMessageProcessor) handleReplicationTask(
 				tag.Error(err))
 		}
 		return err
+	case enumsspb.REPLICATION_TASK_TYPE_NEXUS_ENDPOINT:
+		attr := task.GetNexusEndpointTaskAttributes()
+		err := p.handleNexusEndpointReplicationTask(ctx, attr)
+		if err != nil {
+			p.logger.Error("unable to process nexus endpoint replication task",
+				tag.Error(err))
+		}
+		return err
 	default:
 		return fmt.Errorf("cannot handle replication task of type %v", task.TaskType)
 	}
@@ -265,6 +278,18 @@ func (p *replicationMessageProcessor) handleTaskQueueUserDataReplicationTask(
 		TaskQueue:   attrs.GetTaskQueueName(),
 		UserData:    attrs.GetUserData(),
 	})
+	return err
+}
+
+func (p *replicationMessageProcessor) handleNexusEndpointReplicationTask(
+	ctx context.Context,
+	attrs *replicationspb.NexusEndpointTaskAttributes,
+) error {
+	_, err := p.matchingClient.ApplyNexusEndpointReplicationEvent(ctx,
+		&matchingservice.ApplyNexusEndpointReplicationEventRequest{
+			Endpoint:  attrs.GetEndpoint(),
+			Operation: attrs.GetOperation(),
+		})
 	return err
 }
 

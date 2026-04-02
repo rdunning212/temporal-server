@@ -2261,6 +2261,7 @@ func (e *matchingEngineImpl) CreateNexusEndpoint(ctx context.Context, request *m
 		e.logger.Error("Failed to create Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetSpec().GetName()))
 	} else {
 		e.logger.Info("Created Nexus endpoint", tag.Endpoint(request.GetSpec().GetName()))
+		e.publishNexusEndpointReplicationTask(ctx, enumsspb.NEXUS_ENDPOINT_OPERATION_CREATE, res.GetEntry())
 	}
 	return res, err
 }
@@ -2278,6 +2279,7 @@ func (e *matchingEngineImpl) UpdateNexusEndpoint(ctx context.Context, request *m
 		e.logger.Error("Failed to update Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetSpec().GetName()))
 	} else {
 		e.logger.Info("Updated Nexus endpoint", tag.Endpoint(request.GetSpec().GetName()))
+		e.publishNexusEndpointReplicationTask(ctx, enumsspb.NEXUS_ENDPOINT_OPERATION_UPDATE, res.GetEntry())
 	}
 	return res, err
 }
@@ -2289,8 +2291,66 @@ func (e *matchingEngineImpl) DeleteNexusEndpoint(ctx context.Context, request *m
 		e.logger.Error("Failed to delete Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetId()))
 	} else {
 		e.logger.Info("Deleted Nexus endpoint", tag.Endpoint(request.GetId()))
+		e.publishNexusEndpointReplicationTask(
+			ctx,
+			enumsspb.NEXUS_ENDPOINT_OPERATION_DELETE,
+			&persistencespb.NexusEndpointEntry{Id: request.GetId()},
+		)
 	}
 	return res, err
+}
+
+// publishNexusEndpointReplicationTask publishes a replication task for Nexus endpoint mutations.
+// Publish errors are logged but not returned since replication is best-effort and the local write
+// already succeeded. No-op if the namespace replication queue is not configured (single-cluster).
+func (e *matchingEngineImpl) publishNexusEndpointReplicationTask(
+	ctx context.Context,
+	operation enumsspb.NexusEndpointOperation,
+	entry *persistencespb.NexusEndpointEntry,
+) {
+	if e.namespaceReplicationQueue == nil {
+		return
+	}
+
+	e.replicationLock.Lock()
+	defer e.replicationLock.Unlock()
+
+	err := e.namespaceReplicationQueue.Publish(ctx, &replicationspb.ReplicationTask{
+		TaskType: enumsspb.REPLICATION_TASK_TYPE_NEXUS_ENDPOINT,
+		Attributes: &replicationspb.ReplicationTask_NexusEndpointTaskAttributes{
+			NexusEndpointTaskAttributes: &replicationspb.NexusEndpointTaskAttributes{
+				Endpoint:  entry,
+				Operation: operation,
+			},
+		},
+	})
+	if err != nil {
+		e.logger.Warn("Failed to publish Nexus endpoint replication task",
+			tag.Error(err),
+			tag.Endpoint(entry.GetId()),
+		)
+	}
+}
+
+func (e *matchingEngineImpl) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+	var err error
+	switch request.GetOperation() {
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_CREATE:
+		err = e.nexusEndpointClient.ApplyCreateReplicationEvent(ctx, request.GetEndpoint())
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_UPDATE:
+		err = e.nexusEndpointClient.ApplyUpdateReplicationEvent(ctx, request.GetEndpoint())
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_DELETE:
+		err = e.nexusEndpointClient.ApplyDeleteReplicationEvent(ctx, request.GetEndpoint())
+	default:
+		return nil, serviceerror.NewInvalidArgument(fmt.Sprintf("unknown nexus endpoint replication operation: %v", request.GetOperation()))
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &matchingservice.ApplyNexusEndpointReplicationEventResponse{}, nil
 }
 
 func (e *matchingEngineImpl) ListNexusEndpoints(ctx context.Context, request *matchingservice.ListNexusEndpointsRequest) (*matchingservice.ListNexusEndpointsResponse, error) {
