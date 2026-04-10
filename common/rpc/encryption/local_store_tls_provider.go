@@ -338,15 +338,21 @@ func getServerTLSConfigFromCertProvider(
 	clientAuthType := tls.NoClientCert
 	var clientCaPool *x509.CertPool
 
-	// If mTLS enabled
+	// Always attempt to load client CAs
+	ca, err := certProvider.FetchClientCAs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch client CAs: %v", err)
+	}
+
 	if requireClientAuth {
+		// Strict mTLS: all clients must present a valid certificate
 		clientAuthType = tls.RequireAndVerifyClientCert
-
-		ca, err := certProvider.FetchClientCAs()
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch client CAs: %v", err)
-		}
-
+		clientCaPool = ca
+	} else if ca != nil {
+		// Optional mTLS: verify client certs if presented, but don't require them.
+		// This allows the Nexus HTTP handler to authenticate via client certs
+		// while still accepting connections from clients that use other auth methods.
+		clientAuthType = tls.VerifyClientCertIfGiven
 		clientCaPool = ca
 	}
 	if remoteAddress != "" { // remoteAddress=="" when we return initial tls.Config object when configuring server
