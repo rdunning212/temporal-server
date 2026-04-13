@@ -294,8 +294,9 @@ func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
 		if !hlc.Greater(entry.GetEndpoint().GetClock(), tombstoneClock) {
 			return nil
 		}
-		// CREATE is newer than the deletion — intentional recreation, remove tombstone.
-		delete(m.deletedClocks, entry.GetId())
+		// CREATE is newer than the deletion — intentional recreation.
+		// Don't remove tombstone yet; wait until we confirm the CREATE will proceed
+		// (name conflict resolution might reject it, and we need the tombstone preserved).
 	}
 
 	// Name conflict check: if a local endpoint has the same name but different UUID,
@@ -307,6 +308,9 @@ func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
 	if !proceed {
 		return nil
 	}
+
+	// CREATE will proceed — now safe to remove the tombstone.
+	delete(m.deletedClocks, entry.GetId())
 
 	// Persist the replicated endpoint with Version: 0 (insert) and the source UUID.
 	replicatedEntry := &persistencespb.NexusEndpointEntry{
@@ -424,6 +428,10 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	ctx context.Context,
 	entry *persistencespb.NexusEndpointEntry,
 ) error {
+	if entry.GetEndpoint() == nil || entry.GetEndpoint().GetClock() == nil {
+		return serviceerror.NewInvalidArgument("nexus endpoint replication DELETE task missing clock")
+	}
+
 	if !m.hasLoadedEndpoints.Load() {
 		if err := m.loadEndpoints(ctx); err != nil {
 			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
@@ -506,6 +514,10 @@ func (m *nexusEndpointClient) resolveNameConflictLocked(
 		m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
 			return e.GetId() == existing.GetId()
 		})
+		// Signal long-poll waiters about the table version change.
+		ch := m.tableVersionChanged
+		m.tableVersionChanged = make(chan struct{})
+		close(ch)
 		return true, nil
 	}
 
