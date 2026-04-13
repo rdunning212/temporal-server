@@ -369,12 +369,15 @@ func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
 			// Update is newer than the deletion — intentional recreation.
 			// Don't remove tombstone yet; applyUpsertLocked may reject due to name conflict.
 		}
-		err := m.applyUpsertLocked(ctx, entry)
+		inserted, err := m.applyUpsertLocked(ctx, entry)
 		if err != nil {
 			return err
 		}
-		// Upsert succeeded — now safe to remove the tombstone.
-		delete(m.deletedClocks, entry.GetId())
+		if inserted {
+			// Upsert succeeded — now safe to remove the tombstone.
+			delete(m.deletedClocks, entry.GetId())
+		}
+		// If !inserted, a name conflict rejected the upsert — preserve the tombstone.
 		return nil
 	}
 
@@ -455,7 +458,11 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 		// In practice this limit is never reached; endpoints are cluster-global and few.
 		m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
 	}
-	m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
+	// Only update tombstone if the incoming clock is newer (monotonic guard).
+	// This prevents a stale DELETE from downgrading a tombstone set by a newer DELETE.
+	if existingClock, ok := m.deletedClocks[entry.GetId()]; !ok || hlc.Greater(entry.GetEndpoint().GetClock(), existingClock) {
+		m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
+	}
 
 	existing, ok := m.endpointsByID[entry.GetId()]
 	if !ok {
@@ -531,17 +538,20 @@ func (m *nexusEndpointClient) resolveNameConflictLocked(
 }
 
 // applyUpsertLocked inserts a replicated endpoint entry. Must be called with write lock held.
+// Returns (inserted, error): inserted=false means a name conflict caused the entry to be
+// silently skipped (not an error). Callers that need to distinguish between "inserted" and
+// "rejected by name conflict" should check the inserted return value.
 func (m *nexusEndpointClient) applyUpsertLocked(
 	ctx context.Context,
 	entry *persistencespb.NexusEndpointEntry,
-) error {
+) (bool, error) {
 	// Check for name conflicts before inserting.
 	proceed, err := m.resolveNameConflictLocked(ctx, entry)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !proceed {
-		return nil
+		return false, nil
 	}
 
 	replicatedEntry := &persistencespb.NexusEndpointEntry{
@@ -555,7 +565,7 @@ func (m *nexusEndpointClient) applyUpsertLocked(
 		Entry:                 replicatedEntry,
 	})
 	if err != nil {
-		return fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
+		return false, fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
 	}
 
 	replicatedEntry.Version = resp.Version
@@ -567,7 +577,7 @@ func (m *nexusEndpointClient) applyUpsertLocked(
 	m.tableVersionChanged = make(chan struct{})
 	close(ch)
 
-	return nil
+	return true, nil
 }
 
 func (m *nexusEndpointClient) ListNexusEndpoints(
