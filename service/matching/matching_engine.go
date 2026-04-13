@@ -2333,7 +2333,7 @@ func (e *matchingEngineImpl) publishNexusEndpointReplicationTask(
 	if err != nil {
 		e.logger.Error("Failed to publish Nexus endpoint replication task; standby clusters may be out of sync",
 			tag.Error(err),
-			tag.Endpoint(entry.GetId()),
+			tag.Endpoint(entry.GetEndpoint().GetSpec().GetName()),
 		)
 		metrics.NexusEndpointReplicationPublishFailures.With(e.metricsHandler).Record(1)
 	}

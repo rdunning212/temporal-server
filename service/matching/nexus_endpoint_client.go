@@ -366,10 +366,16 @@ func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
 				// Update is not newer than the deletion — discard to avoid resurrection.
 				return nil
 			}
-			// Update is newer than the deletion (intentional recreation) — remove tombstone and proceed.
-			delete(m.deletedClocks, entry.GetId())
+			// Update is newer than the deletion — intentional recreation.
+			// Don't remove tombstone yet; applyUpsertLocked may reject due to name conflict.
 		}
-		return m.applyUpsertLocked(ctx, entry)
+		err := m.applyUpsertLocked(ctx, entry)
+		if err != nil {
+			return err
+		}
+		// Upsert succeeded — now safe to remove the tombstone.
+		delete(m.deletedClocks, entry.GetId())
+		return nil
 	}
 
 	// Stale update check: if the replicated clock is not newer than the local clock, skip.
@@ -443,14 +449,13 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 
 	// Always record a tombstone from the replication task's clock.
 	// This is necessary even when the endpoint is not present locally (DELETE arrived before CREATE).
-	if entry.GetEndpoint().GetClock() != nil {
-		if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
-			// Safety guard: clear the map rather than grow without bound.
-			// In practice this limit is never reached; endpoints are cluster-global and few.
-			m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
-		}
-		m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
+	// Note: nil clock is already rejected by the early return above.
+	if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
+		// Safety guard: clear the map rather than grow without bound.
+		// In practice this limit is never reached; endpoints are cluster-global and few.
+		m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
 	}
+	m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
 
 	existing, ok := m.endpointsByID[entry.GetId()]
 	if !ok {
