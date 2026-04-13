@@ -23,6 +23,10 @@ func (wt *WorkflowTags) extractFromMatchingServiceServerMessage(message any) []t
 		}
 	case *matchingservice.AddWorkflowTaskResponse:
 		return nil
+	case *matchingservice.ApplyNexusEndpointReplicationEventRequest:
+		return nil
+	case *matchingservice.ApplyNexusEndpointReplicationEventResponse:
+		return nil
 	case *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest:
 		return nil
 	case *matchingservice.ApplyTaskQueueUserDataReplicationEventResponse:

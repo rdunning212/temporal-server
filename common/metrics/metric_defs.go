@@ -1139,6 +1139,10 @@ var (
 	ReplicatorLatency                                 = NewTimerDef("replicator_latency")
 	ReplicatorDLQFailures                             = NewCounterDef("replicator_dlq_enqueue_fails")
 	NamespaceReplicationEnqueueDLQCount               = NewCounterDef("namespace_replication_dlq_enqueue_requests")
+	NexusEndpointReplicationPublishFailures           = NewCounterDef(
+		"nexus_endpoint_replication_publish_failures",
+		WithDescription("Number of times a Nexus endpoint mutation (create/update/delete) succeeded locally but failed to enqueue a replication task. Standby clusters may be out of sync until the source cluster restarts or the replication queue recovers."),
+	)
 	ParentClosePolicyProcessorSuccess                 = NewCounterDef("parent_close_policy_processor_requests")
 	ParentClosePolicyProcessorFailures                = NewCounterDef("parent_close_policy_processor_errors")
 	ScheduleMissedCatchupWindow                       = NewCounterDef(

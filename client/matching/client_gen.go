@@ -13,6 +13,26 @@ import (
 	"google.golang.org/grpc"
 )
 
+func (c *clientImpl) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+	opts ...grpc.CallOption,
+) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+
+	p, err := tqid.NormalPartitionFromRpcName("not-applicable", "not-applicable", enumspb.TASK_QUEUE_TYPE_UNSPECIFIED)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := c.getClientForTaskQueuePartition(p)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.createContext(ctx)
+	defer cancel()
+	return client.ApplyNexusEndpointReplicationEvent(ctx, request, opts...)
+}
+
 func (c *clientImpl) ApplyTaskQueueUserDataReplicationEvent(
 	ctx context.Context,
 	request *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest,

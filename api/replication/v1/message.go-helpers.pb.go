@@ -818,3 +818,40 @@ func (this *VersionedTransitionArtifact) Equal(that interface{}) bool {
 
 	return proto.Equal(this, that1)
 }
+
+// Marshal an object of type NexusEndpointTaskAttributes to the protobuf v3 wire format
+func (val *NexusEndpointTaskAttributes) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type NexusEndpointTaskAttributes from the protobuf v3 wire format
+func (val *NexusEndpointTaskAttributes) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *NexusEndpointTaskAttributes) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two NexusEndpointTaskAttributes values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *NexusEndpointTaskAttributes) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *NexusEndpointTaskAttributes
+	switch t := that.(type) {
+	case *NexusEndpointTaskAttributes:
+		that1 = t
+	case NexusEndpointTaskAttributes:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}

@@ -126,22 +126,21 @@ func (s *NexusStateReplicationSuite) TestNexusOperationEventsReplicated() {
 			"http://"+s.clusters[0].Host().FrontendHTTPAddress()+"/namespaces/{{.NamespaceName}}/nexus/callback")
 	}
 
-	// Nexus endpoints registry isn't replicated yet, manually create the same endpoint in both clusters.
-	for _, cl := range []operatorservice.OperatorServiceClient{s.clusters[0].OperatorClient(), s.clusters[1].OperatorClient()} {
-		_, err := cl.CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
-			Spec: &nexuspb.EndpointSpec{
-				Name: endpointName,
-				Target: &nexuspb.EndpointTarget{
-					Variant: &nexuspb.EndpointTarget_External_{
-						External: &nexuspb.EndpointTarget_External{
-							Url: "http://" + listenAddr,
-						},
+	// Create endpoint on cluster 0 and wait for replication to cluster 1.
+	_, err := s.clusters[0].OperatorClient().CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
+		Spec: &nexuspb.EndpointSpec{
+			Name: endpointName,
+			Target: &nexuspb.EndpointTarget{
+				Variant: &nexuspb.EndpointTarget_External_{
+					External: &nexuspb.EndpointTarget_External{
+						Url: "http://" + listenAddr,
 					},
 				},
 			},
-		})
-		s.NoError(err)
-	}
+		},
+	})
+	s.NoError(err)
+	s.waitForEndpointReplication(ctx, endpointName, s.clusters[1].OperatorClient())
 
 	sdkClient0, err := sdkclient.Dial(sdkclient.Options{
 		HostPort:  s.clusters[0].Host().FrontendGRPCAddress(),
@@ -279,22 +278,21 @@ func (s *NexusStateReplicationSuite) TestNexusOperationCancelationReplicated() {
 			"http://"+s.clusters[0].Host().FrontendHTTPAddress()+"/namespaces/{{.NamespaceName}}/nexus/callback")
 	}
 
-	// Nexus endpoints registry isn't replicated yet, manually create the same endpoint in both clusters.
-	for _, cl := range []operatorservice.OperatorServiceClient{s.clusters[0].OperatorClient(), s.clusters[1].OperatorClient()} {
-		_, err := cl.CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
-			Spec: &nexuspb.EndpointSpec{
-				Name: endpointName,
-				Target: &nexuspb.EndpointTarget{
-					Variant: &nexuspb.EndpointTarget_External_{
-						External: &nexuspb.EndpointTarget_External{
-							Url: "http://" + listenAddr,
-						},
+	// Create endpoint on cluster 0 and wait for replication to cluster 1.
+	_, err := s.clusters[0].OperatorClient().CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
+		Spec: &nexuspb.EndpointSpec{
+			Name: endpointName,
+			Target: &nexuspb.EndpointTarget{
+				Variant: &nexuspb.EndpointTarget_External_{
+					External: &nexuspb.EndpointTarget_External{
+						Url: "http://" + listenAddr,
 					},
 				},
 			},
-		})
-		s.NoError(err)
-	}
+		},
+	})
+	s.NoError(err)
+	s.waitForEndpointReplication(ctx, endpointName, s.clusters[1].OperatorClient())
 
 	sdkClient0, err := sdkclient.Dial(sdkclient.Options{
 		HostPort:  s.clusters[0].Host().FrontendGRPCAddress(),
@@ -508,21 +506,21 @@ func (s *NexusStateReplicationSuite) TestNexusOperationBufferedCompletionReplica
 	}
 
 	endpointName := testcore.RandomizedNexusEndpoint(s.T().Name())
-	for _, cl := range s.clusters {
-		_, err := cl.OperatorClient().CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
-			Spec: &nexuspb.EndpointSpec{
-				Name: endpointName,
-				Target: &nexuspb.EndpointTarget{
-					Variant: &nexuspb.EndpointTarget_External_{
-						External: &nexuspb.EndpointTarget_External{
-							Url: "http://" + listenAddr,
-						},
+	// Create endpoint on cluster 0 and wait for replication to cluster 1.
+	_, err := s.clusters[0].OperatorClient().CreateNexusEndpoint(ctx, &operatorservice.CreateNexusEndpointRequest{
+		Spec: &nexuspb.EndpointSpec{
+			Name: endpointName,
+			Target: &nexuspb.EndpointTarget{
+				Variant: &nexuspb.EndpointTarget_External_{
+					External: &nexuspb.EndpointTarget_External{
+						Url: "http://" + listenAddr,
 					},
 				},
 			},
-		})
-		s.NoError(err)
-	}
+		},
+	})
+	s.NoError(err)
+	s.waitForEndpointReplication(ctx, endpointName, s.clusters[1].OperatorClient())
 
 	sdkClient0, err := sdkclient.Dial(sdkclient.Options{
 		HostPort:  s.clusters[0].Host().FrontendGRPCAddress(),
@@ -708,6 +706,23 @@ func (s *NexusStateReplicationSuite) waitCallback(
 		s.Len(descResp.GetCallbacks(), 1)
 		return condition(descResp.GetCallbacks()[0])
 	}, time.Second*20, time.Millisecond*100)
+}
+
+func (s *NexusStateReplicationSuite) waitForEndpointReplication(ctx context.Context, endpointName string, targetClient operatorservice.OperatorServiceClient) {
+	s.Eventually(func() bool {
+		resp, err := targetClient.ListNexusEndpoints(ctx, &operatorservice.ListNexusEndpointsRequest{
+			PageSize: 100,
+		})
+		if err != nil {
+			return false
+		}
+		for _, ep := range resp.GetEndpoints() {
+			if ep.GetSpec().GetName() == endpointName {
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 100*time.Millisecond, "timed out waiting for endpoint %q to replicate", endpointName)
 }
 
 func (s *NexusStateReplicationSuite) completeNexusOperation(ctx context.Context, result any, callbackUrl, callbackToken string) {

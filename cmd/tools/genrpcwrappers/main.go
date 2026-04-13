@@ -316,7 +316,8 @@ func makeGetMatchingClient(reqType reflect.Type) string {
 	case "CreateNexusEndpointRequest",
 		"UpdateNexusEndpointRequest",
 		"ListNexusEndpointsRequest",
-		"DeleteNexusEndpointRequest":
+		"DeleteNexusEndpointRequest",
+		"ApplyNexusEndpointReplicationEventRequest":
 		// Always route these requests to the same matching node for all namespaces.
 		tq = fieldWithPath{path: `"not-applicable"`}
 		tqt = fieldWithPath{path: "enumspb.TASK_QUEUE_TYPE_UNSPECIFIED"}

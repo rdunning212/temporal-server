@@ -2372,3 +2372,77 @@ func (this *ListNexusEndpointsResponse) Equal(that interface{}) bool {
 
 	return proto.Equal(this, that1)
 }
+
+// Marshal an object of type ApplyNexusEndpointReplicationEventRequest to the protobuf v3 wire format
+func (val *ApplyNexusEndpointReplicationEventRequest) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type ApplyNexusEndpointReplicationEventRequest from the protobuf v3 wire format
+func (val *ApplyNexusEndpointReplicationEventRequest) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *ApplyNexusEndpointReplicationEventRequest) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two ApplyNexusEndpointReplicationEventRequest values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *ApplyNexusEndpointReplicationEventRequest) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *ApplyNexusEndpointReplicationEventRequest
+	switch t := that.(type) {
+	case *ApplyNexusEndpointReplicationEventRequest:
+		that1 = t
+	case ApplyNexusEndpointReplicationEventRequest:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}
+
+// Marshal an object of type ApplyNexusEndpointReplicationEventResponse to the protobuf v3 wire format
+func (val *ApplyNexusEndpointReplicationEventResponse) Marshal() ([]byte, error) {
+	return proto.Marshal(val)
+}
+
+// Unmarshal an object of type ApplyNexusEndpointReplicationEventResponse from the protobuf v3 wire format
+func (val *ApplyNexusEndpointReplicationEventResponse) Unmarshal(buf []byte) error {
+	return proto.Unmarshal(buf, val)
+}
+
+// Size returns the size of the object, in bytes, once serialized
+func (val *ApplyNexusEndpointReplicationEventResponse) Size() int {
+	return proto.Size(val)
+}
+
+// Equal returns whether two ApplyNexusEndpointReplicationEventResponse values are equivalent by recursively
+// comparing the message's fields.
+// For more information see the documentation for
+// https://pkg.go.dev/google.golang.org/protobuf/proto#Equal
+func (this *ApplyNexusEndpointReplicationEventResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	var that1 *ApplyNexusEndpointReplicationEventResponse
+	switch t := that.(type) {
+	case *ApplyNexusEndpointReplicationEventResponse:
+		that1 = t
+	case ApplyNexusEndpointReplicationEventResponse:
+		that1 = &t
+	default:
+		return false
+	}
+
+	return proto.Equal(this, that1)
+}

@@ -708,19 +708,9 @@ func (e taskExecutor) executeCancelationBackoffTask(env hsm.Environment, node *h
 	})
 }
 
-// lookupEndpint gets an endpoint from the registry, preferring to look up by ID and falling back to name lookup.
-// The fallback is a temporary workaround for not implementing endpoint replication, and endpoint ID being a UUID set by
-// the system. We try to get the endpoint by name to support cases where an operator manually created an endpoint with
-// the same name in two replicas.
+// lookupEndpoint gets an endpoint from the registry by ID.
 func (e taskExecutor) lookupEndpoint(ctx context.Context, namespaceID namespace.ID, endpointID, endpointName string) (*persistencespb.NexusEndpointEntry, error) {
-	entry, err := e.EndpointRegistry.GetByID(ctx, endpointID)
-	if err != nil {
-		if errors.As(err, new(*serviceerror.NotFound)) {
-			return e.EndpointRegistry.GetByName(ctx, namespaceID, endpointName)
-		}
-		return nil, err
-	}
-	return entry, nil
+	return e.EndpointRegistry.GetByID(ctx, endpointID)
 }
 
 func nexusOperationFailure(operation Operation, scheduledEventID int64, cause *failurepb.Failure) *failurepb.Failure {

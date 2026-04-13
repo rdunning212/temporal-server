@@ -39,6 +39,7 @@ const (
 	REPLICATION_TASK_TYPE_BACKFILL_HISTORY_TASK            ReplicationTaskType = 10
 	REPLICATION_TASK_TYPE_VERIFY_VERSIONED_TRANSITION_TASK ReplicationTaskType = 11
 	REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK   ReplicationTaskType = 12
+	REPLICATION_TASK_TYPE_NEXUS_ENDPOINT                   ReplicationTaskType = 13
 )
 
 // Enum value maps for ReplicationTaskType.
@@ -57,6 +58,7 @@ var (
 		10: "REPLICATION_TASK_TYPE_BACKFILL_HISTORY_TASK",
 		11: "REPLICATION_TASK_TYPE_VERIFY_VERSIONED_TRANSITION_TASK",
 		12: "REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK",
+		13: "REPLICATION_TASK_TYPE_NEXUS_ENDPOINT",
 	}
 	ReplicationTaskType_value = map[string]int32{
 		"REPLICATION_TASK_TYPE_UNSPECIFIED":                      0,
@@ -72,6 +74,7 @@ var (
 		"REPLICATION_TASK_TYPE_BACKFILL_HISTORY_TASK":            10,
 		"REPLICATION_TASK_TYPE_VERIFY_VERSIONED_TRANSITION_TASK": 11,
 		"REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK":   12,
+		"REPLICATION_TASK_TYPE_NEXUS_ENDPOINT":                   13,
 	}
 )
 
@@ -111,11 +114,12 @@ func (x ReplicationTaskType) String() string {
 		return "VerifyVersionedTransitionTask"
 	case REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK:
 		return "SyncVersionedTransitionTask"
-	default:
-		return strconv.
+	case REPLICATION_TASK_TYPE_NEXUS_ENDPOINT:
 
-			// Enum value maps for NamespaceOperation.
-			Itoa(int(x))
+		// Enum value maps for NamespaceOperation.
+		return "NexusEndpoint"
+	default:
+		return strconv.Itoa(int(x))
 	}
 
 }
@@ -194,6 +198,70 @@ func (NamespaceOperation) EnumDescriptor() ([]byte, []int) {
 	return file_temporal_server_api_enums_v1_replication_proto_rawDescGZIP(), []int{1}
 }
 
+type NexusEndpointOperation int32
+
+const (
+	NEXUS_ENDPOINT_OPERATION_UNSPECIFIED NexusEndpointOperation = 0
+	NEXUS_ENDPOINT_OPERATION_CREATE      NexusEndpointOperation = 1
+	NEXUS_ENDPOINT_OPERATION_UPDATE      NexusEndpointOperation = 2
+	NEXUS_ENDPOINT_OPERATION_DELETE      NexusEndpointOperation = 3
+)
+
+// Enum value maps for NexusEndpointOperation.
+var (
+	NexusEndpointOperation_name = map[int32]string{
+		0: "NEXUS_ENDPOINT_OPERATION_UNSPECIFIED",
+		1: "NEXUS_ENDPOINT_OPERATION_CREATE",
+		2: "NEXUS_ENDPOINT_OPERATION_UPDATE",
+		3: "NEXUS_ENDPOINT_OPERATION_DELETE",
+	}
+	NexusEndpointOperation_value = map[string]int32{
+		"NEXUS_ENDPOINT_OPERATION_UNSPECIFIED": 0,
+		"NEXUS_ENDPOINT_OPERATION_CREATE":      1,
+		"NEXUS_ENDPOINT_OPERATION_UPDATE":      2,
+		"NEXUS_ENDPOINT_OPERATION_DELETE":      3,
+	}
+)
+
+func (x NexusEndpointOperation) Enum() *NexusEndpointOperation {
+	p := new(NexusEndpointOperation)
+	*p = x
+	return p
+}
+
+func (x NexusEndpointOperation) String() string {
+	switch x {
+	case NEXUS_ENDPOINT_OPERATION_UNSPECIFIED:
+		return "Unspecified"
+	case NEXUS_ENDPOINT_OPERATION_CREATE:
+		return "Create"
+	case NEXUS_ENDPOINT_OPERATION_UPDATE:
+		return "Update"
+	case NEXUS_ENDPOINT_OPERATION_DELETE:
+		return "Delete"
+	default:
+		return strconv.Itoa(int(x))
+	}
+
+}
+
+func (NexusEndpointOperation) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporal_server_api_enums_v1_replication_proto_enumTypes[2].Descriptor()
+}
+
+func (NexusEndpointOperation) Type() protoreflect.EnumType {
+	return &file_temporal_server_api_enums_v1_replication_proto_enumTypes[2]
+}
+
+func (x NexusEndpointOperation) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NexusEndpointOperation.Descriptor instead.
+func (NexusEndpointOperation) EnumDescriptor() ([]byte, []int) {
+	return file_temporal_server_api_enums_v1_replication_proto_rawDescGZIP(), []int{2}
+}
+
 type ReplicationFlowControlCommand int32
 
 const (
@@ -237,11 +305,11 @@ func (x ReplicationFlowControlCommand) String() string {
 }
 
 func (ReplicationFlowControlCommand) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporal_server_api_enums_v1_replication_proto_enumTypes[2].Descriptor()
+	return file_temporal_server_api_enums_v1_replication_proto_enumTypes[3].Descriptor()
 }
 
 func (ReplicationFlowControlCommand) Type() protoreflect.EnumType {
-	return &file_temporal_server_api_enums_v1_replication_proto_enumTypes[2]
+	return &file_temporal_server_api_enums_v1_replication_proto_enumTypes[3]
 }
 
 func (x ReplicationFlowControlCommand) Number() protoreflect.EnumNumber {
@@ -250,14 +318,14 @@ func (x ReplicationFlowControlCommand) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReplicationFlowControlCommand.Descriptor instead.
 func (ReplicationFlowControlCommand) EnumDescriptor() ([]byte, []int) {
-	return file_temporal_server_api_enums_v1_replication_proto_rawDescGZIP(), []int{2}
+	return file_temporal_server_api_enums_v1_replication_proto_rawDescGZIP(), []int{3}
 }
 
 var File_temporal_server_api_enums_v1_replication_proto protoreflect.FileDescriptor
 
 const file_temporal_server_api_enums_v1_replication_proto_rawDesc = "" +
 	"\n" +
-	".temporal/server/api/enums/v1/replication.proto\x12\x1ctemporal.server.api.enums.v1*\xfe\x04\n" +
+	".temporal/server/api/enums/v1/replication.proto\x12\x1ctemporal.server.api.enums.v1*\xa8\x05\n" +
 	"\x13ReplicationTaskType\x12%\n" +
 	"!REPLICATION_TASK_TYPE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$REPLICATION_TASK_TYPE_NAMESPACE_TASK\x10\x01\x12&\n" +
@@ -272,11 +340,17 @@ const file_temporal_server_api_enums_v1_replication_proto_rawDesc = "" +
 	"+REPLICATION_TASK_TYPE_BACKFILL_HISTORY_TASK\x10\n" +
 	"\x12:\n" +
 	"6REPLICATION_TASK_TYPE_VERIFY_VERSIONED_TRANSITION_TASK\x10\v\x128\n" +
-	"4REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK\x10\f*y\n" +
+	"4REPLICATION_TASK_TYPE_SYNC_VERSIONED_TRANSITION_TASK\x10\f\x12(\n" +
+	"$REPLICATION_TASK_TYPE_NEXUS_ENDPOINT\x10\r*y\n" +
 	"\x12NamespaceOperation\x12#\n" +
 	"\x1fNAMESPACE_OPERATION_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aNAMESPACE_OPERATION_CREATE\x10\x01\x12\x1e\n" +
-	"\x1aNAMESPACE_OPERATION_UPDATE\x10\x02*\xaa\x01\n" +
+	"\x1aNAMESPACE_OPERATION_UPDATE\x10\x02*\xb1\x01\n" +
+	"\x16NexusEndpointOperation\x12(\n" +
+	"$NEXUS_ENDPOINT_OPERATION_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fNEXUS_ENDPOINT_OPERATION_CREATE\x10\x01\x12#\n" +
+	"\x1fNEXUS_ENDPOINT_OPERATION_UPDATE\x10\x02\x12#\n" +
+	"\x1fNEXUS_ENDPOINT_OPERATION_DELETE\x10\x03*\xaa\x01\n" +
 	"\x1dReplicationFlowControlCommand\x120\n" +
 	",REPLICATION_FLOW_CONTROL_COMMAND_UNSPECIFIED\x10\x00\x12+\n" +
 	"'REPLICATION_FLOW_CONTROL_COMMAND_RESUME\x10\x01\x12*\n" +
@@ -294,11 +368,12 @@ func file_temporal_server_api_enums_v1_replication_proto_rawDescGZIP() []byte {
 	return file_temporal_server_api_enums_v1_replication_proto_rawDescData
 }
 
-var file_temporal_server_api_enums_v1_replication_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_temporal_server_api_enums_v1_replication_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_temporal_server_api_enums_v1_replication_proto_goTypes = []any{
 	(ReplicationTaskType)(0),           // 0: temporal.server.api.enums.v1.ReplicationTaskType
 	(NamespaceOperation)(0),            // 1: temporal.server.api.enums.v1.NamespaceOperation
-	(ReplicationFlowControlCommand)(0), // 2: temporal.server.api.enums.v1.ReplicationFlowControlCommand
+	(NexusEndpointOperation)(0),        // 2: temporal.server.api.enums.v1.NexusEndpointOperation
+	(ReplicationFlowControlCommand)(0), // 3: temporal.server.api.enums.v1.ReplicationFlowControlCommand
 }
 var file_temporal_server_api_enums_v1_replication_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -318,7 +393,7 @@ func file_temporal_server_api_enums_v1_replication_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporal_server_api_enums_v1_replication_proto_rawDesc), len(file_temporal_server_api_enums_v1_replication_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   0,
 			NumExtensions: 0,
 			NumServices:   0,

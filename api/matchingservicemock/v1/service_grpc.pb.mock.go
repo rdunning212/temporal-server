@@ -82,6 +82,26 @@ func (mr *MockMatchingServiceClientMockRecorder) AddWorkflowTask(ctx, in any, op
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddWorkflowTask", reflect.TypeOf((*MockMatchingServiceClient)(nil).AddWorkflowTask), varargs...)
 }
 
+// ApplyNexusEndpointReplicationEvent mocks base method.
+func (m *MockMatchingServiceClient) ApplyNexusEndpointReplicationEvent(ctx context.Context, in *matchingservice.ApplyNexusEndpointReplicationEventRequest, opts ...grpc.CallOption) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, in}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "ApplyNexusEndpointReplicationEvent", varargs...)
+	ret0, _ := ret[0].(*matchingservice.ApplyNexusEndpointReplicationEventResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ApplyNexusEndpointReplicationEvent indicates an expected call of ApplyNexusEndpointReplicationEvent.
+func (mr *MockMatchingServiceClientMockRecorder) ApplyNexusEndpointReplicationEvent(ctx, in any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, in}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyNexusEndpointReplicationEvent", reflect.TypeOf((*MockMatchingServiceClient)(nil).ApplyNexusEndpointReplicationEvent), varargs...)
+}
+
 // ApplyTaskQueueUserDataReplicationEvent mocks base method.
 func (m *MockMatchingServiceClient) ApplyTaskQueueUserDataReplicationEvent(ctx context.Context, in *matchingservice.ApplyTaskQueueUserDataReplicationEventRequest, opts ...grpc.CallOption) (*matchingservice.ApplyTaskQueueUserDataReplicationEventResponse, error) {
 	m.ctrl.T.Helper()
@@ -734,6 +754,21 @@ func (m *MockMatchingServiceServer) AddWorkflowTask(arg0 context.Context, arg1 *
 func (mr *MockMatchingServiceServerMockRecorder) AddWorkflowTask(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddWorkflowTask", reflect.TypeOf((*MockMatchingServiceServer)(nil).AddWorkflowTask), arg0, arg1)
+}
+
+// ApplyNexusEndpointReplicationEvent mocks base method.
+func (m *MockMatchingServiceServer) ApplyNexusEndpointReplicationEvent(arg0 context.Context, arg1 *matchingservice.ApplyNexusEndpointReplicationEventRequest) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ApplyNexusEndpointReplicationEvent", arg0, arg1)
+	ret0, _ := ret[0].(*matchingservice.ApplyNexusEndpointReplicationEventResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ApplyNexusEndpointReplicationEvent indicates an expected call of ApplyNexusEndpointReplicationEvent.
+func (mr *MockMatchingServiceServerMockRecorder) ApplyNexusEndpointReplicationEvent(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyNexusEndpointReplicationEvent", reflect.TypeOf((*MockMatchingServiceServer)(nil).ApplyNexusEndpointReplicationEvent), arg0, arg1)
 }
 
 // ApplyTaskQueueUserDataReplicationEvent mocks base method.
