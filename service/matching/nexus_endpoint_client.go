@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.temporal.io/api/serviceerror"
+	clockspb "go.temporal.io/server/api/clock/v1"
 	"go.temporal.io/server/api/matchingservice/v1"
 	persistencespb "go.temporal.io/server/api/persistence/v1"
 	"go.temporal.io/server/common/backoff"
@@ -27,6 +28,11 @@ import (
 const (
 	// loadEndpointsPageSize is the page size to use when initially loading endpoints from persistence
 	loadEndpointsPageSize = 100
+
+	// maxDeletedEndpointTombstones caps the in-memory tombstone map to prevent unbounded growth.
+	// Nexus endpoints are cluster-global resources; the practical number of endpoints is small,
+	// so this cap is a safety guard only.
+	maxDeletedEndpointTombstones = 10000
 )
 
 type (
@@ -62,6 +68,12 @@ type (
 		endpointsByName     map[string]*persistencespb.NexusEndpointEntry
 		tableVersionChanged chan struct{}
 
+		// deletedClocks tracks the HLC clock of endpoints at the time they were deleted via replication.
+		// This tombstone map prevents a stale UPDATE replication event that arrives after a DELETE
+		// from resurrecting the endpoint via applyUpsertLocked.
+		// Capped at maxDeletedEndpointTombstones; cleared entirely on overflow (safety guard only).
+		deletedClocks map[string]*clockspb.HybridLogicalClock
+
 		refreshLock              sync.Mutex // protects refreshHandle which is updated whenever node gains/loses ownership
 		refreshHandle            *goro.Handle
 		endpointsRefreshInterval dynamicconfig.DurationPropertyFn
@@ -78,6 +90,7 @@ func newEndpointClient(
 		endpointsRefreshInterval: endpointsRefreshInterval,
 		persistence:              persistence,
 		tableVersionChanged:      make(chan struct{}),
+		deletedClocks:            make(map[string]*clockspb.HybridLogicalClock),
 	}
 }
 
@@ -203,10 +216,22 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 	ctx context.Context,
 	request *matchingservice.DeleteNexusEndpointRequest,
 ) (*matchingservice.DeleteNexusEndpointResponse, error) {
+	resp, _, err := m.deleteNexusEndpointInternal(ctx, request)
+	return resp, err
+}
+
+// deleteNexusEndpointInternal deletes the endpoint and returns the response alongside the deleted
+// entry. The deleted entry is used by the matching engine to build the DELETE replication task with
+// the entry's HLC clock, so that standby clusters can record a tombstone even when the DELETE
+// replication event arrives before the CREATE.
+func (m *nexusEndpointClient) deleteNexusEndpointInternal(
+	ctx context.Context,
+	request *matchingservice.DeleteNexusEndpointRequest,
+) (*matchingservice.DeleteNexusEndpointResponse, *persistencespb.NexusEndpointEntry, error) {
 	if !m.hasLoadedEndpoints.Load() {
 		// Endpoints must be loaded into memory before deletion so that the endpoint UUID can be looked up
 		if err := m.loadEndpoints(ctx); err != nil {
-			return nil, fmt.Errorf("error loading nexus endpoints cache: %w", err)
+			return nil, nil, fmt.Errorf("error loading nexus endpoints cache: %w", err)
 		}
 	}
 
@@ -215,7 +240,7 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 
 	entry, ok := m.endpointsByID[request.Id]
 	if !ok {
-		return nil, serviceerror.NewNotFoundf("error deleting nexus endpoint with ID: %v", request.Id)
+		return nil, nil, serviceerror.NewNotFoundf("error deleting nexus endpoint with ID: %v", request.Id)
 	}
 
 	err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
@@ -223,7 +248,7 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 		ID:                    entry.Id,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	m.tableVersion++
@@ -236,7 +261,323 @@ func (m *nexusEndpointClient) DeleteNexusEndpoint(
 	m.tableVersionChanged = make(chan struct{})
 	close(ch)
 
-	return &matchingservice.DeleteNexusEndpointResponse{}, nil
+	return &matchingservice.DeleteNexusEndpointResponse{}, entry, nil
+}
+
+// ApplyCreateReplicationEvent applies a replicated endpoint creation from a remote cluster.
+// The endpoint entry retains the original UUID from the source cluster.
+// If a local endpoint with the same UUID exists, this is a duplicate and is skipped.
+// If a local endpoint with the same name but different UUID exists, HLC clock comparison
+// determines which one wins (last-writer-wins).
+func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	// Duplicate check: if endpoint with same UUID already exists, skip (idempotent).
+	if _, exists := m.endpointsByID[entry.GetId()]; exists {
+		return nil
+	}
+
+	// Tombstone check: if this endpoint ID was previously deleted via replication, a stale CREATE
+	// replay must not resurrect it. Only proceed if the incoming CREATE is strictly newer than
+	// the deletion clock (intentional recreation), otherwise discard.
+	if tombstoneClock, deleted := m.deletedClocks[entry.GetId()]; deleted {
+		if !hlc.Greater(entry.GetEndpoint().GetClock(), tombstoneClock) {
+			return nil
+		}
+		// CREATE is newer than the deletion — intentional recreation.
+		// Don't remove tombstone yet; wait until we confirm the CREATE will proceed
+		// (name conflict resolution might reject it, and we need the tombstone preserved).
+	}
+
+	// Name conflict check: if a local endpoint has the same name but different UUID,
+	// use HLC clock comparison to determine the winner.
+	proceed, err := m.resolveNameConflictLocked(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
+	}
+
+	// CREATE will proceed — now safe to remove the tombstone.
+	delete(m.deletedClocks, entry.GetId())
+
+	// Persist the replicated endpoint with Version: 0 (insert) and the source UUID.
+	replicatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  0,
+		Id:       entry.GetId(),
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 replicatedEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
+	}
+
+	replicatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[replicatedEntry.Id] = replicatedEntry
+	m.endpointsByName[replicatedEntry.Endpoint.Spec.Name] = replicatedEntry
+	m.insertEndpointLocked(replicatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// ApplyUpdateReplicationEvent applies a replicated endpoint update from a remote cluster.
+// Looks up the endpoint by UUID. If not found, falls through to create (handles out-of-order delivery).
+// Uses HLC clock comparison to detect stale updates.
+func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	existing, exists := m.endpointsByID[entry.GetId()]
+	if !exists {
+		// Endpoint not found locally. Two possible explanations:
+		// (a) Out-of-order delivery: CREATE has not arrived yet — safe to upsert.
+		// (b) Stale UPDATE after DELETE: a DELETE was already applied and this UPDATE arrived late.
+		//     In this case we must NOT resurrect the deleted endpoint.
+		if tombstoneClock, deleted := m.deletedClocks[entry.GetId()]; deleted {
+			if !hlc.Greater(entry.GetEndpoint().GetClock(), tombstoneClock) {
+				// Update is not newer than the deletion — discard to avoid resurrection.
+				return nil
+			}
+			// Update is newer than the deletion — intentional recreation.
+			// Don't remove tombstone yet; applyUpsertLocked may reject due to name conflict.
+		}
+		inserted, err := m.applyUpsertLocked(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if inserted {
+			// Upsert succeeded — now safe to remove the tombstone.
+			delete(m.deletedClocks, entry.GetId())
+		}
+		// If !inserted, a name conflict rejected the upsert — preserve the tombstone.
+		return nil
+	}
+
+	// Stale update check: if the replicated clock is not newer than the local clock, skip.
+	if !hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
+		return nil
+	}
+
+	// If the update renames the endpoint, check for name conflicts with other local endpoints.
+	if existing.GetEndpoint().GetSpec().GetName() != entry.GetEndpoint().GetSpec().GetName() {
+		proceed, err := m.resolveNameConflictLocked(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			return nil
+		}
+	}
+
+	// Apply the update using the LOCAL version (not the source version) for optimistic concurrency.
+	updatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  existing.Version,
+		Id:       existing.Id,
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 updatedEntry,
+	})
+	if err != nil {
+		return fmt.Errorf("error persisting replicated nexus endpoint update: %w", err)
+	}
+
+	updatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[updatedEntry.Id] = updatedEntry
+	// If the name changed, clean up the old name mapping.
+	if existing.GetEndpoint().GetSpec().GetName() != updatedEntry.GetEndpoint().GetSpec().GetName() {
+		delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+	}
+	m.endpointsByName[updatedEntry.Endpoint.Spec.Name] = updatedEntry
+	m.insertEndpointLocked(updatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// ApplyDeleteReplicationEvent applies a replicated endpoint deletion from a remote cluster.
+// Always records a tombstone using the clock from the replication task entry, regardless of
+// whether the endpoint exists locally. This handles the DELETE-before-CREATE delivery scenario:
+// if a CREATE replication event arrives later with a clock ≤ the tombstone clock, it is discarded.
+// The entry in the replication task must carry the deleted endpoint's HLC clock.
+func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) error {
+	if entry.GetEndpoint() == nil || entry.GetEndpoint().GetClock() == nil {
+		return serviceerror.NewInvalidArgument("nexus endpoint replication DELETE task missing clock")
+	}
+
+	if !m.hasLoadedEndpoints.Load() {
+		if err := m.loadEndpoints(ctx); err != nil {
+			return fmt.Errorf("error loading nexus endpoints cache: %w", err)
+		}
+	}
+
+	m.Lock()
+	defer m.Unlock()
+
+	// Always record a tombstone from the replication task's clock.
+	// This is necessary even when the endpoint is not present locally (DELETE arrived before CREATE).
+	// Note: nil clock is already rejected by the early return above.
+	if len(m.deletedClocks) >= maxDeletedEndpointTombstones {
+		// Safety guard: clear the map rather than grow without bound.
+		// In practice this limit is never reached; endpoints are cluster-global and few.
+		m.deletedClocks = make(map[string]*clockspb.HybridLogicalClock)
+	}
+	// Only update tombstone if the incoming clock is newer (monotonic guard).
+	// This prevents a stale DELETE from downgrading a tombstone set by a newer DELETE.
+	if existingClock, ok := m.deletedClocks[entry.GetId()]; !ok || hlc.Greater(entry.GetEndpoint().GetClock(), existingClock) {
+		m.deletedClocks[entry.GetId()] = entry.GetEndpoint().GetClock()
+	}
+
+	existing, ok := m.endpointsByID[entry.GetId()]
+	if !ok {
+		// Not present locally — tombstone recorded above; nothing else to do.
+		return nil
+	}
+
+	// Don't delete if the local endpoint is strictly newer than the DELETE's clock.
+	// This handles multi-source replication where the endpoint was updated from
+	// a different cluster after this deletion occurred at the source.
+	if hlc.Greater(existing.GetEndpoint().GetClock(), entry.GetEndpoint().GetClock()) {
+		return nil
+	}
+
+	if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		ID:                    existing.GetId(),
+	}); err != nil {
+		return fmt.Errorf("error deleting replicated nexus endpoint: %w", err)
+	}
+
+	m.tableVersion++
+	delete(m.endpointsByID, existing.GetId())
+	delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+	m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
+		return e.GetId() == existing.GetId()
+	})
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return nil
+}
+
+// resolveNameConflictLocked checks if a replicated endpoint's name conflicts with a different
+// local endpoint. If so, HLC clock comparison determines the winner: if the replicated endpoint
+// wins, the conflicting local endpoint is deleted; if the local endpoint wins, returns false
+// to signal the caller to skip the replicated entry. Must be called with write lock held.
+// Returns (proceed bool, error).
+func (m *nexusEndpointClient) resolveNameConflictLocked(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) (bool, error) {
+	existing, nameConflict := m.endpointsByName[entry.GetEndpoint().GetSpec().GetName()]
+	if !nameConflict || existing.GetId() == entry.GetId() {
+		// No conflict, or same endpoint (not a conflict).
+		return true, nil
+	}
+
+	if hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
+		// Replicated endpoint wins — delete the local one first.
+		if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
+			LastKnownTableVersion: m.tableVersion,
+			ID:                    existing.GetId(),
+		}); err != nil {
+			return false, fmt.Errorf("error deleting conflicting local endpoint during replication: %w", err)
+		}
+		m.tableVersion++
+		delete(m.endpointsByID, existing.GetId())
+		delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+		m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
+			return e.GetId() == existing.GetId()
+		})
+		// Signal long-poll waiters about the table version change.
+		ch := m.tableVersionChanged
+		m.tableVersionChanged = make(chan struct{})
+		close(ch)
+		return true, nil
+	}
+
+	// Local endpoint wins — caller should skip the replicated endpoint.
+	return false, nil
+}
+
+// applyUpsertLocked inserts a replicated endpoint entry. Must be called with write lock held.
+// Returns (inserted, error): inserted=false means a name conflict caused the entry to be
+// silently skipped (not an error). Callers that need to distinguish between "inserted" and
+// "rejected by name conflict" should check the inserted return value.
+func (m *nexusEndpointClient) applyUpsertLocked(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) (bool, error) {
+	// Check for name conflicts before inserting.
+	proceed, err := m.resolveNameConflictLocked(ctx, entry)
+	if err != nil {
+		return false, err
+	}
+	if !proceed {
+		return false, nil
+	}
+
+	replicatedEntry := &persistencespb.NexusEndpointEntry{
+		Version:  0, // insert semantics
+		Id:       entry.GetId(),
+		Endpoint: entry.GetEndpoint(),
+	}
+
+	resp, err := m.persistence.CreateOrUpdateNexusEndpoint(ctx, &p.CreateOrUpdateNexusEndpointRequest{
+		LastKnownTableVersion: m.tableVersion,
+		Entry:                 replicatedEntry,
+	})
+	if err != nil {
+		return false, fmt.Errorf("error persisting replicated nexus endpoint: %w", err)
+	}
+
+	replicatedEntry.Version = resp.Version
+	m.tableVersion++
+	m.endpointsByID[replicatedEntry.Id] = replicatedEntry
+	m.endpointsByName[replicatedEntry.Endpoint.Spec.Name] = replicatedEntry
+	m.insertEndpointLocked(replicatedEntry)
+	ch := m.tableVersionChanged
+	m.tableVersionChanged = make(chan struct{})
+	close(ch)
+
+	return true, nil
 }
 
 func (m *nexusEndpointClient) ListNexusEndpoints(

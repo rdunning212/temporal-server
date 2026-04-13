@@ -20,6 +20,7 @@ var (
 		"BackfillHistoryTask":           10,
 		"VerifyVersionedTransitionTask": 11,
 		"SyncVersionedTransitionTask":   12,
+		"NexusEndpoint":                 13,
 	}
 )
 
@@ -51,6 +52,26 @@ func NamespaceOperationFromString(s string) (NamespaceOperation, error) {
 		return NamespaceOperation(v), nil
 	}
 	return NamespaceOperation(0), fmt.Errorf("%s is not a valid NamespaceOperation", s)
+}
+
+var (
+	NexusEndpointOperation_shorthandValue = map[string]int32{
+		"Unspecified": 0,
+		"Create":      1,
+		"Update":      2,
+		"Delete":      3,
+	}
+)
+
+// NexusEndpointOperationFromString parses a NexusEndpointOperation value from  either the protojson
+// canonical SCREAMING_CASE enum or the traditional temporal PascalCase enum to NexusEndpointOperation
+func NexusEndpointOperationFromString(s string) (NexusEndpointOperation, error) {
+	if v, ok := NexusEndpointOperation_value[s]; ok {
+		return NexusEndpointOperation(v), nil
+	} else if v, ok := NexusEndpointOperation_shorthandValue[s]; ok {
+		return NexusEndpointOperation(v), nil
+	}
+	return NexusEndpointOperation(0), fmt.Errorf("%s is not a valid NexusEndpointOperation", s)
 }
 
 var (

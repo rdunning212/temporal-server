@@ -2261,6 +2261,7 @@ func (e *matchingEngineImpl) CreateNexusEndpoint(ctx context.Context, request *m
 		e.logger.Error("Failed to create Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetSpec().GetName()))
 	} else {
 		e.logger.Info("Created Nexus endpoint", tag.Endpoint(request.GetSpec().GetName()))
+		e.publishNexusEndpointReplicationTask(ctx, enumsspb.NEXUS_ENDPOINT_OPERATION_CREATE, res.GetEntry())
 	}
 	return res, err
 }
@@ -2278,19 +2279,85 @@ func (e *matchingEngineImpl) UpdateNexusEndpoint(ctx context.Context, request *m
 		e.logger.Error("Failed to update Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetSpec().GetName()))
 	} else {
 		e.logger.Info("Updated Nexus endpoint", tag.Endpoint(request.GetSpec().GetName()))
+		e.publishNexusEndpointReplicationTask(ctx, enumsspb.NEXUS_ENDPOINT_OPERATION_UPDATE, res.GetEntry())
 	}
 	return res, err
 }
 
 func (e *matchingEngineImpl) DeleteNexusEndpoint(ctx context.Context, request *matchingservice.DeleteNexusEndpointRequest) (*matchingservice.DeleteNexusEndpointResponse, error) {
 	// Write API, let persistence verify table ownership.
-	res, err := e.nexusEndpointClient.DeleteNexusEndpoint(ctx, request)
+	// Use deleteNexusEndpointInternal to atomically obtain the deleted entry alongside the response,
+	// so the DELETE replication task carries the endpoint's HLC clock. Standby clusters use that
+	// clock to record a tombstone even when the DELETE arrives before the corresponding CREATE,
+	// preventing the CREATE from later resurrecting an already-deleted endpoint.
+	res, deletedEntry, err := e.nexusEndpointClient.deleteNexusEndpointInternal(ctx, request)
 	if err != nil {
 		e.logger.Error("Failed to delete Nexus endpoint", tag.Error(err), tag.Endpoint(request.GetId()))
 	} else {
 		e.logger.Info("Deleted Nexus endpoint", tag.Endpoint(request.GetId()))
+		e.publishNexusEndpointReplicationTask(
+			ctx,
+			enumsspb.NEXUS_ENDPOINT_OPERATION_DELETE,
+			deletedEntry,
+		)
 	}
 	return res, err
+}
+
+// publishNexusEndpointReplicationTask publishes a replication task for Nexus endpoint mutations.
+// Publish is best-effort: if the replication queue is unavailable the local mutation has already
+// committed and there is no safe rollback path. Failures are logged and counted via
+// metrics.NexusEndpointReplicationPublishFailures so operators can detect and investigate divergence.
+// No-op if the namespace replication queue is not configured (single-cluster setup).
+func (e *matchingEngineImpl) publishNexusEndpointReplicationTask(
+	ctx context.Context,
+	operation enumsspb.NexusEndpointOperation,
+	entry *persistencespb.NexusEndpointEntry,
+) {
+	if e.namespaceReplicationQueue == nil {
+		return
+	}
+
+	e.replicationLock.Lock()
+	defer e.replicationLock.Unlock()
+
+	err := e.namespaceReplicationQueue.Publish(ctx, &replicationspb.ReplicationTask{
+		TaskType: enumsspb.REPLICATION_TASK_TYPE_NEXUS_ENDPOINT,
+		Attributes: &replicationspb.ReplicationTask_NexusEndpointTaskAttributes{
+			NexusEndpointTaskAttributes: &replicationspb.NexusEndpointTaskAttributes{
+				Endpoint:  entry,
+				Operation: operation,
+			},
+		},
+	})
+	if err != nil {
+		e.logger.Error("Failed to publish Nexus endpoint replication task; standby clusters may be out of sync",
+			tag.Error(err),
+			tag.Endpoint(entry.GetEndpoint().GetSpec().GetName()),
+		)
+		metrics.NexusEndpointReplicationPublishFailures.With(e.metricsHandler).Record(1)
+	}
+}
+
+func (e *matchingEngineImpl) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+) (*matchingservice.ApplyNexusEndpointReplicationEventResponse, error) {
+	var err error
+	switch request.GetOperation() {
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_CREATE:
+		err = e.nexusEndpointClient.ApplyCreateReplicationEvent(ctx, request.GetEndpoint())
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_UPDATE:
+		err = e.nexusEndpointClient.ApplyUpdateReplicationEvent(ctx, request.GetEndpoint())
+	case enumsspb.NEXUS_ENDPOINT_OPERATION_DELETE:
+		err = e.nexusEndpointClient.ApplyDeleteReplicationEvent(ctx, request.GetEndpoint())
+	default:
+		return nil, serviceerror.NewInvalidArgument(fmt.Sprintf("unknown nexus endpoint replication operation: %v", request.GetOperation()))
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &matchingservice.ApplyNexusEndpointReplicationEventResponse{}, nil
 }
 
 func (e *matchingEngineImpl) ListNexusEndpoints(ctx context.Context, request *matchingservice.ListNexusEndpointsRequest) (*matchingservice.ListNexusEndpointsResponse, error) {

@@ -26,6 +26,7 @@ var (
 		"/temporal.server.api.matchingservice.v1.MatchingService/UpdateWorkerBuildIdCompatibility":       1,
 		"/temporal.server.api.matchingservice.v1.MatchingService/GetTaskQueueUserData":                   1,
 		"/temporal.server.api.matchingservice.v1.MatchingService/ApplyTaskQueueUserDataReplicationEvent": 1,
+		"/temporal.server.api.matchingservice.v1.MatchingService/ApplyNexusEndpointReplicationEvent":    1,
 		"/temporal.server.api.matchingservice.v1.MatchingService/GetBuildIdTaskQueueMapping":             1,
 		"/temporal.server.api.matchingservice.v1.MatchingService/ForceUnloadTaskQueuePartition":          1,
 		"/temporal.server.api.matchingservice.v1.MatchingService/ForceUnloadTaskQueue":                   1,

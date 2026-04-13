@@ -404,6 +404,14 @@ func (h *Handler) ApplyTaskQueueUserDataReplicationEvent(
 	return h.engine.ApplyTaskQueueUserDataReplicationEvent(ctx, request)
 }
 
+func (h *Handler) ApplyNexusEndpointReplicationEvent(
+	ctx context.Context,
+	request *matchingservice.ApplyNexusEndpointReplicationEventRequest,
+) (_ *matchingservice.ApplyNexusEndpointReplicationEventResponse, retError error) {
+	defer log.CapturePanic(h.logger, &retError)
+	return h.engine.ApplyNexusEndpointReplicationEvent(ctx, request)
+}
+
 func (h *Handler) GetBuildIdTaskQueueMapping(
 	ctx context.Context,
 	request *matchingservice.GetBuildIdTaskQueueMappingRequest,

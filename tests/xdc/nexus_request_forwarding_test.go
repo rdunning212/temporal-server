@@ -83,8 +83,7 @@ func (s *NexusRequestForwardingSuite) TearDownSuite() {
 	s.tearDownSuite()
 }
 
-// Only tests dispatch by namespace+task_queue.
-// TODO: Add test cases for dispatch by endpoint ID once endpoints support replication.
+// Tests dispatch by namespace+task_queue.
 func (s *NexusRequestForwardingSuite) TestStartOperationForwardedFromStandbyToActive() {
 	ns := s.createGlobalNamespace()
 
@@ -221,8 +220,7 @@ func (s *NexusRequestForwardingSuite) TestStartOperationForwardedFromStandbyToAc
 	}
 }
 
-// Only tests dispatch by namespace+task_queue.
-// TODO: Add test cases for dispatch by endpoint ID once endpoints support replication.
+// Tests dispatch by namespace+task_queue.
 func (s *NexusRequestForwardingSuite) TestCancelOperationForwardedFromStandbyToActive() {
 	ns := s.createGlobalNamespace()
 
@@ -457,9 +455,7 @@ func (s *NexusRequestForwardingSuite) TestOperationCompletionForwardedFromStandb
 
 			_, err := s.clusters[0].OperatorClient().CreateNexusEndpoint(ctx, createEndpointReq)
 			s.NoError(err)
-
-			_, err = s.clusters[1].OperatorClient().CreateNexusEndpoint(ctx, createEndpointReq)
-			s.NoError(err)
+			s.waitForEndpointReplication(ctx, endpointName, s.clusters[1].OperatorClient())
 
 			activeSDKClient, err := client.Dial(client.Options{
 				HostPort:  s.clusters[0].Host().FrontendGRPCAddress(),
@@ -652,6 +648,23 @@ func requireExpectedMetricsCaptured(t *testing.T, snap map[string][]*metricstest
 	require.Equal(t, metrics.MetricUnit(""), snap["nexus_requests"][0].Unit)
 	require.Equal(t, 1, len(snap["nexus_latency"]))
 	require.Subset(t, snap["nexus_latency"][0].Tags, map[string]string{"namespace": ns, "method": method, "outcome": expectedOutcome})
+}
+
+func (s *NexusRequestForwardingSuite) waitForEndpointReplication(ctx context.Context, endpointName string, targetClient operatorservice.OperatorServiceClient) {
+	s.Eventually(func() bool {
+		resp, err := targetClient.ListNexusEndpoints(ctx, &operatorservice.ListNexusEndpointsRequest{
+			PageSize: 100,
+		})
+		if err != nil {
+			return false
+		}
+		for _, ep := range resp.GetEndpoints() {
+			if ep.GetSpec().GetName() == endpointName {
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 100*time.Millisecond, "timed out waiting for endpoint %q to replicate", endpointName)
 }
 
 func (s *NexusRequestForwardingSuite) mustToPayload(v any) *commonpb.Payload {
