@@ -300,25 +300,12 @@ func (m *nexusEndpointClient) ApplyCreateReplicationEvent(
 
 	// Name conflict check: if a local endpoint has the same name but different UUID,
 	// use HLC clock comparison to determine the winner.
-	if existing, nameConflict := m.endpointsByName[entry.GetEndpoint().GetSpec().GetName()]; nameConflict {
-		if hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
-			// Replicated endpoint wins — delete the local one first.
-			if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
-				LastKnownTableVersion: m.tableVersion,
-				ID:                    existing.GetId(),
-			}); err != nil {
-				return fmt.Errorf("error deleting conflicting local endpoint during replication: %w", err)
-			}
-			m.tableVersion++
-			delete(m.endpointsByID, existing.GetId())
-			delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
-			m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
-				return e.GetId() == existing.GetId()
-			})
-		} else {
-			// Local endpoint wins — skip the replicated endpoint.
-			return nil
-		}
+	proceed, err := m.resolveNameConflictLocked(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
 	}
 
 	// Persist the replicated endpoint with Version: 0 (insert) and the source UUID.
@@ -384,6 +371,17 @@ func (m *nexusEndpointClient) ApplyUpdateReplicationEvent(
 	// Stale update check: if the replicated clock is not newer than the local clock, skip.
 	if !hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
 		return nil
+	}
+
+	// If the update renames the endpoint, check for name conflicts with other local endpoints.
+	if existing.GetEndpoint().GetSpec().GetName() != entry.GetEndpoint().GetSpec().GetName() {
+		proceed, err := m.resolveNameConflictLocked(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			return nil
+		}
 	}
 
 	// Apply the update using the LOCAL version (not the source version) for optimistic concurrency.
@@ -452,6 +450,13 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 		return nil
 	}
 
+	// Don't delete if the local endpoint is strictly newer than the DELETE's clock.
+	// This handles multi-source replication where the endpoint was updated from
+	// a different cluster after this deletion occurred at the source.
+	if hlc.Greater(existing.GetEndpoint().GetClock(), entry.GetEndpoint().GetClock()) {
+		return nil
+	}
+
 	if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
 		LastKnownTableVersion: m.tableVersion,
 		ID:                    existing.GetId(),
@@ -472,11 +477,56 @@ func (m *nexusEndpointClient) ApplyDeleteReplicationEvent(
 	return nil
 }
 
+// resolveNameConflictLocked checks if a replicated endpoint's name conflicts with a different
+// local endpoint. If so, HLC clock comparison determines the winner: if the replicated endpoint
+// wins, the conflicting local endpoint is deleted; if the local endpoint wins, returns false
+// to signal the caller to skip the replicated entry. Must be called with write lock held.
+// Returns (proceed bool, error).
+func (m *nexusEndpointClient) resolveNameConflictLocked(
+	ctx context.Context,
+	entry *persistencespb.NexusEndpointEntry,
+) (bool, error) {
+	existing, nameConflict := m.endpointsByName[entry.GetEndpoint().GetSpec().GetName()]
+	if !nameConflict || existing.GetId() == entry.GetId() {
+		// No conflict, or same endpoint (not a conflict).
+		return true, nil
+	}
+
+	if hlc.Greater(entry.GetEndpoint().GetClock(), existing.GetEndpoint().GetClock()) {
+		// Replicated endpoint wins — delete the local one first.
+		if err := m.persistence.DeleteNexusEndpoint(ctx, &p.DeleteNexusEndpointRequest{
+			LastKnownTableVersion: m.tableVersion,
+			ID:                    existing.GetId(),
+		}); err != nil {
+			return false, fmt.Errorf("error deleting conflicting local endpoint during replication: %w", err)
+		}
+		m.tableVersion++
+		delete(m.endpointsByID, existing.GetId())
+		delete(m.endpointsByName, existing.GetEndpoint().GetSpec().GetName())
+		m.endpointEntries = slices.DeleteFunc(m.endpointEntries, func(e *persistencespb.NexusEndpointEntry) bool {
+			return e.GetId() == existing.GetId()
+		})
+		return true, nil
+	}
+
+	// Local endpoint wins — caller should skip the replicated endpoint.
+	return false, nil
+}
+
 // applyUpsertLocked inserts a replicated endpoint entry. Must be called with write lock held.
 func (m *nexusEndpointClient) applyUpsertLocked(
 	ctx context.Context,
 	entry *persistencespb.NexusEndpointEntry,
 ) error {
+	// Check for name conflicts before inserting.
+	proceed, err := m.resolveNameConflictLocked(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
+	}
+
 	replicatedEntry := &persistencespb.NexusEndpointEntry{
 		Version:  0, // insert semantics
 		Id:       entry.GetId(),
