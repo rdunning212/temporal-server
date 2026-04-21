@@ -75,6 +75,7 @@ type operationContext struct {
 	forwardingEnabledForNamespace dynamicconfig.BoolPropertyFnWithNamespaceFilter
 	headersBlacklist              *dynamicconfig.GlobalCachedTypedValue[*regexp.Regexp]
 	metricTagConfig               *dynamicconfig.GlobalCachedTypedValue[*nexusoperations.NexusMetricTagConfig]
+	ddSigner                      *dynamicconfig.GlobalCachedTypedValue[*ddCallerSigner]
 	cleanupFunctions              []func(map[string]string, error)
 }
 
@@ -221,6 +222,54 @@ func (c *operationContext) interceptRequest(
 		return converted
 	}
 
+	// Inject server-authenticated caller-identity headers for DD Nexus bridge
+	// workers. Runs after auth/authorize so c.claims reflects the verified
+	// caller. The signer is resolved per request from the cached dynamic
+	// config so operators can rotate the HMAC key without a restart.
+	//
+	// Strip semantics: whenever a signer is configured, attacker-supplied
+	// copies of every reserved x-dd-caller-* key are removed unconditionally
+	// — even when c.claims is nil (anonymous / no claim mapper) — because
+	// otherwise a hostile caller could smuggle a plausible-looking but
+	// unsigned attestation past the frontend to the bridge worker. The
+	// server-issued values are stamped only when c.claims and the request
+	// body are present; the HMAC binds subject/target/endpoint/ts so the
+	// attestation cannot be replayed across endpoints or target namespaces.
+	//
+	// Operators must not blacklist "x-dd-caller-*" in
+	// FrontendNexusRequestHeadersBlacklist — doing so would silently disable
+	// caller-identity delivery and the bridge would deny every request.
+	var ddSigner *ddCallerSigner
+	if c.ddSigner != nil {
+		ddSigner = c.ddSigner.Get()
+	}
+	if ddSigner != nil && request.GetRequest() != nil {
+		hdr := request.Request.Header
+		if hdr == nil {
+			hdr = map[string]string{}
+			request.Request.Header = hdr
+		}
+		for _, k := range ddCallerHeaders {
+			delete(hdr, k)
+		}
+		if c.claims != nil {
+			subject := c.claims.Subject
+			systemRole := encodeRole(c.claims.System)
+			nsRoles := encodeNamespaceRoles(c.claims.Namespaces)
+			targetNs := c.namespaceName
+			endpoint := c.endpointName
+			ts := strconv.FormatInt(time.Now().Unix(), 10)
+
+			hdr[ddCallerSubjectHeader] = subject
+			hdr[ddCallerSystemRoleHeader] = systemRole
+			hdr[ddCallerNsRolesHeader] = nsRoles
+			hdr[ddCallerTargetNsHeader] = targetNs
+			hdr[ddCallerEndpointHeader] = endpoint
+			hdr[ddCallerTSHeader] = ts
+			hdr[ddCallerSigHeader] = ddSigner.Sign(signedPayload(subject, systemRole, nsRoles, targetNs, endpoint, ts))
+		}
+	}
+
 	// THIS MUST BE THE LAST STEP IN interceptRequest.
 	// Sanitize headers.
 	if request.GetRequest().GetHeader() != nil {
@@ -304,6 +353,11 @@ type nexusHandler struct {
 	headersBlacklist              *dynamicconfig.GlobalCachedTypedValue[*regexp.Regexp]
 	metricTagConfig               *dynamicconfig.GlobalCachedTypedValue[*nexusoperations.NexusMetricTagConfig]
 	httpTraceProvider             commonnexus.HTTPClientTraceProvider
+	// ddSigner is a cached holder of the HMAC signer used to stamp
+	// caller-identity headers in interceptRequest. A nil holder, or a holder
+	// whose Get() returns nil, disables injection. Hot rotation of the
+	// underlying HMAC key rebuilds the inner signer without a restart.
+	ddSigner *dynamicconfig.GlobalCachedTypedValue[*ddCallerSigner]
 }
 
 // Extracts a nexusContext from the given ctx and returns an operationContext with tagged metrics and logging.
@@ -324,6 +378,7 @@ func (h *nexusHandler) getOperationContext(ctx context.Context, method string) (
 		forwardingEnabledForNamespace: h.forwardingEnabledForNamespace,
 		headersBlacklist:              h.headersBlacklist,
 		metricTagConfig:               h.metricTagConfig,
+		ddSigner:                      h.ddSigner,
 		cleanupFunctions:              make([]func(map[string]string, error), 0),
 	}
 	oc.metricsHandlerForInterceptors = h.metricsHandler.WithTags(

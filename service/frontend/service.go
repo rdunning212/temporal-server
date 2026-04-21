@@ -192,6 +192,12 @@ type Config struct {
 	MaxNexusOperationTokenLength   dynamicconfig.IntPropertyFnWithNamespaceFilter
 	NexusRequestHeadersBlacklist   *dynamicconfig.GlobalCachedTypedValue[*regexp.Regexp]
 	NexusOperationsMetricTagConfig *dynamicconfig.GlobalCachedTypedValue[*nexusoperations.NexusMetricTagConfig]
+	// NexusDDCallerSigner is the cached HMAC-SHA256 signer used to stamp
+	// caller-identity headers onto outbound Nexus task dispatches. The cached
+	// pointer is nil when the HMAC key is empty, disabling injection. Hot
+	// rotation is driven by the underlying dynamic config key; swapping in a
+	// new base64 key rebuilds the signer without a restart.
+	NexusDDCallerSigner *dynamicconfig.GlobalCachedTypedValue[*ddCallerSigner]
 
 	LinkMaxSize        dynamicconfig.IntPropertyFnWithNamespaceFilter
 	MaxLinksPerRequest dynamicconfig.IntPropertyFnWithNamespaceFilter
@@ -337,6 +343,13 @@ func NewConfig(
 					return matchNothing, nil
 				}
 				return util.WildCardStringsToRegexp(patterns)
+			},
+		),
+		NexusDDCallerSigner: dynamicconfig.NewGlobalCachedTypedValue(
+			dc,
+			dynamicconfig.FrontendNexusDDCallerHmacKey,
+			func(b64Key string) (*ddCallerSigner, error) {
+				return newDDCallerSigner(b64Key)
 			},
 		),
 		NexusOperationsMetricTagConfig: dynamicconfig.NewGlobalCachedTypedValue(
