@@ -99,19 +99,30 @@ func TestDDCallerSigner_DifferentKeysProduceDifferentSignatures(t *testing.T) {
 }
 
 func TestSignedPayload_IsLengthPrefixed(t *testing.T) {
-	p := signedPayload("sub", "worker", "ns=reader", "target", "endpoint", "100")
-	// Expected: "3:sub6:worker9:ns=reader6:target8:endpoint3:100"
-	require.Equal(t, "3:sub6:worker9:ns=reader6:target8:endpoint3:100", p)
+	p := signedPayload("sub", "worker", "ns=reader", "target", "endpoint", "100", "active", "n0", "jwt")
+	// Expected: concat of "<len>:<value>" for each field, in order.
+	require.Equal(t, "3:sub6:worker9:ns=reader6:target8:endpoint3:1006:active2:n03:jwt", p)
 }
 
 func TestSignedPayload_DisambiguatesFieldBoundaries(t *testing.T) {
 	// A hostile subject that tries to forge the remaining fields by embedding
 	// colons or other separators must not produce the same payload as a
 	// legitimate multi-field input.
-	a := signedPayload("sub:target", "", "", "real", "endpoint", "1")
-	b := signedPayload("sub", "", "", "target", "realendpoint", "1")
+	a := signedPayload("sub:target", "", "", "real", "endpoint", "1", "c", "n", "jwt")
+	b := signedPayload("sub", "", "", "target", "realendpoint", "1", "c", "n", "jwt")
 	require.NotEqual(t, a, b,
 		"length-prefixing must disambiguate field boundaries even when values contain separator-like bytes")
+}
+
+func TestSignedPayload_DisambiguatesTrailingFields(t *testing.T) {
+	// Length-prefixing must also prevent collisions between trailing fields
+	// (cluster/nonce/authType) — a hostile caller who can influence nonce
+	// (e.g., via header injection defeated by strip) must not be able to
+	// forge cluster or authType through concatenation.
+	a := signedPayload("s", "", "", "t", "e", "1", "cluster-a", "nonce", "jwt")
+	b := signedPayload("s", "", "", "t", "e", "1", "cluster", "a nonce", "jwt")
+	require.NotEqual(t, a, b,
+		"length-prefixing must disambiguate cluster/nonce boundaries")
 }
 
 func TestEncodeRole_Undefined(t *testing.T) {
@@ -179,8 +190,55 @@ func TestDDCallerHeaders_CanonicalHeaderListMatchesConstants(t *testing.T) {
 		ddCallerTargetNsHeader,
 		ddCallerEndpointHeader,
 		ddCallerTSHeader,
+		ddCallerClusterHeader,
+		ddCallerNonceHeader,
+		ddCallerAuthTypeHeader,
 		ddCallerSigHeader,
 	} {
 		require.Contains(t, all, name, "ddCallerHeaders must include %q", name)
 	}
+}
+
+func TestInferAuthType_NilClaimsIsEmpty(t *testing.T) {
+	require.Equal(t, "", inferAuthType(nil))
+}
+
+func TestInferAuthType_AdminWithNoNamespacesIsMTLS(t *testing.T) {
+	// DD claim mapper shape for internode / replication mTLS: Subject set to
+	// the CN, System=RoleAdmin, Namespaces nil.
+	claims := &authorization.Claims{
+		Subject: "internode.example.com",
+		System:  authorization.RoleAdmin,
+	}
+	require.Equal(t, ddAuthTypeMTLS, inferAuthType(claims))
+}
+
+func TestInferAuthType_AdminWithNamespacesIsJWT(t *testing.T) {
+	// An admin JWT with explicit domain grants does NOT look like internode
+	// mTLS — the Namespaces map is populated by the claim mapper.
+	claims := &authorization.Claims{
+		Subject: "alice@datadog",
+		System:  authorization.RoleAdmin,
+		Namespaces: map[string]authorization.Role{
+			"billing": authorization.RoleReader,
+		},
+	}
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
+}
+
+func TestInferAuthType_NonAdminWithNoNamespacesIsJWT(t *testing.T) {
+	// A JWT user with no domain grants (e.g., misconfigured token) is not
+	// mTLS — mTLS specifically requires System=RoleAdmin.
+	claims := &authorization.Claims{
+		Subject: "alice@datadog",
+		System:  authorization.RoleWriter,
+	}
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
+}
+
+func TestInferAuthType_UndefinedRoleIsJWT(t *testing.T) {
+	// Empty role + empty namespaces defaults to JWT, not MTLS — the bridge
+	// worker's allowlist for mTLS should never admit a non-admin subject.
+	claims := &authorization.Claims{Subject: "alice@datadog"}
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
 }

@@ -468,6 +468,9 @@ func TestNexusInterceptRequest_DDCallerInjection_StampsAllHeadersAndVerifiableSi
 	require.Equal(t, "test-namespace", got[ddCallerTargetNsHeader])
 	require.Equal(t, "orders-service", got[ddCallerEndpointHeader])
 	require.NotEmpty(t, got[ddCallerTSHeader])
+	require.NotEmpty(t, got[ddCallerClusterHeader])
+	require.NotEmpty(t, got[ddCallerNonceHeader])
+	require.Equal(t, ddAuthTypeJWT, got[ddCallerAuthTypeHeader])
 	require.NotEmpty(t, got[ddCallerSigHeader])
 
 	// A verifier reconstructs the payload from the emitted fields and confirms
@@ -481,8 +484,100 @@ func TestNexusInterceptRequest_DDCallerInjection_StampsAllHeadersAndVerifiableSi
 		got[ddCallerTargetNsHeader],
 		got[ddCallerEndpointHeader],
 		got[ddCallerTSHeader],
+		got[ddCallerClusterHeader],
+		got[ddCallerNonceHeader],
+		got[ddCallerAuthTypeHeader],
 	))
 	require.Equal(t, expected, got[ddCallerSigHeader])
+}
+
+func TestNexusInterceptRequest_DDCallerInjection_NonceIsFreshPerRequest(t *testing.T) {
+	// Two invocations of interceptRequest for the same caller must produce
+	// distinct nonces and therefore distinct signatures, so a captured
+	// attestation cannot be replayed within the bridge's timestamp window.
+	// Use two operationContexts to mirror real traffic — each Nexus call is
+	// processed with its own operationContext.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	keyB64 := testDDHMACKeyB64(t)
+	claims := &authorization.Claims{Subject: "alice", System: authorization.RoleWriter}
+
+	runOnce := func() map[string]string {
+		oc := newOperationContext(contextOptions{
+			namespaceState:          enumspb.NAMESPACE_STATE_REGISTERED,
+			quota:                   1,
+			namespaceRateLimitAllow: true,
+			rateLimitAllow:          true,
+		})
+		oc.claims = claims
+		oc.ddSigner = newDDSignerHolder(t, keyB64)
+
+		header := nexus.Header{"ok-header": "ok"}
+		innerCtx := oc.augmentContext(ctx, header)
+		req := &matchingservice.DispatchNexusTaskRequest{Request: &nexuspb.Request{Header: map[string]string{"ok-header": "ok"}}}
+		require.NoError(t, oc.interceptRequest(innerCtx, req, header))
+		return req.Request.Header
+	}
+	first := runOnce()
+	second := runOnce()
+
+	require.NotEqual(t, first[ddCallerNonceHeader], second[ddCallerNonceHeader],
+		"nonce must be freshly generated per request")
+	require.NotEqual(t, first[ddCallerSigHeader], second[ddCallerSigHeader],
+		"signature must differ when nonce differs, even for identical callers")
+}
+
+func TestNexusInterceptRequest_DDCallerInjection_StripsForgedHeadersOnForwardPath(t *testing.T) {
+	// CRIT regression: when a request targets a namespace inactive in this
+	// cluster and forwarding is enabled, interceptRequest returns a
+	// NamespaceNotActive error and the caller (StartOperation /
+	// CancelOperation) invokes forwardStart/CancelOperation which relays
+	// options.Header verbatim to the peer cluster's HTTP client. If the strip
+	// runs only on the non-forward path (the bug we fixed), forged
+	// x-dd-caller-* headers ride through to the peer and — if the peer has
+	// not opted in — to the bridge worker unchanged. This test locks the
+	// hoisted-strip behavior so that can't regress.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	oc := newOperationContext(contextOptions{
+		namespaceState:          enumspb.NAMESPACE_STATE_REGISTERED,
+		namespacePassive:        true, // namespace active in alt cluster
+		quota:                   1,
+		namespaceRateLimitAllow: true,
+		rateLimitAllow:          true,
+		redirectAllow:           true, // forwarding enabled
+	})
+	oc.claims = &authorization.Claims{Subject: "real-caller"}
+	oc.ddSigner = newDDSignerHolder(t, testDDHMACKeyB64(t))
+
+	hostile := map[string]string{
+		ddCallerSubjectHeader:    "admin-impersonator",
+		ddCallerSystemRoleHeader: "admin",
+		ddCallerClusterHeader:    "victim-cluster",
+		ddCallerNonceHeader:      "replay-nonce",
+		ddCallerAuthTypeHeader:   ddAuthTypeMTLS,
+		ddCallerSigHeader:        "deadbeef",
+		"ok-header":              "ok",
+	}
+	// Model the real flow: nexuspb.Request.Header shares its underlying map
+	// with options.Header (see matchingRequest — no copy). Both must end up
+	// stripped.
+	header := nexus.Header(hostile)
+	ctx = oc.augmentContext(ctx, header)
+	req := &matchingservice.DispatchNexusTaskRequest{Request: &nexuspb.Request{Header: hostile}}
+
+	err := oc.interceptRequest(ctx, req, header)
+	var notActiveErr *serviceerror.NamespaceNotActive
+	require.ErrorAs(t, err, &notActiveErr,
+		"test precondition: inactive-namespace + forwarding-enabled must return NamespaceNotActive so the caller takes the forward branch")
+
+	for _, k := range ddCallerHeaders {
+		_, present := header[k]
+		require.Falsef(t, present, "options.Header %q must be stripped on forward path — otherwise forwarded HTTP request carries forged attestation", k)
+		_, present = req.Request.Header[k]
+		require.Falsef(t, present, "request.Request.Header %q must be stripped on forward path", k)
+	}
+	require.Equal(t, "ok", header["ok-header"], "non-DD headers must pass through unchanged")
 }
 
 func TestNexusInterceptRequest_DDCallerInjection_StripsAttackerSuppliedHeaders(t *testing.T) {

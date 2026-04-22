@@ -25,13 +25,19 @@ const (
 	ddCallerTargetNsHeader   = "x-dd-caller-target-ns"
 	ddCallerEndpointHeader   = "x-dd-caller-endpoint"
 	ddCallerTSHeader         = "x-dd-caller-ts"
+	ddCallerClusterHeader    = "x-dd-caller-cluster"
+	ddCallerNonceHeader      = "x-dd-caller-nonce"
+	ddCallerAuthTypeHeader   = "x-dd-caller-auth-type"
 	ddCallerSigHeader        = "x-dd-caller-sig"
 )
 
 // ddCallerHeaders lists every caller-identity header the frontend populates.
-// interceptRequest strips any existing entries with these keys from the
-// incoming Nexus header before writing the server-authenticated values,
-// preventing a hostile caller from forging an attestation.
+// interceptRequest strips any existing entries with these keys from both the
+// inbound nexus.Header and the matching request's header map before writing
+// the server-authenticated values, preventing a hostile caller from forging an
+// attestation. The strip runs unconditionally whenever a signer is configured,
+// including on the cross-cluster forward path where options.Header is relayed
+// verbatim to the active cluster.
 var ddCallerHeaders = []string{
 	ddCallerSubjectHeader,
 	ddCallerSystemRoleHeader,
@@ -39,6 +45,9 @@ var ddCallerHeaders = []string{
 	ddCallerTargetNsHeader,
 	ddCallerEndpointHeader,
 	ddCallerTSHeader,
+	ddCallerClusterHeader,
+	ddCallerNonceHeader,
+	ddCallerAuthTypeHeader,
 	ddCallerSigHeader,
 }
 
@@ -107,15 +116,58 @@ func (s *ddCallerSigner) Sign(payload string) string {
 // The subject is derived from a JWT claim and can legally contain arbitrary
 // bytes, so length-prefixing is required to prevent field-boundary
 // manipulation by a hostile caller who can influence their own subject value.
-func signedPayload(subject, systemRole, nsRoles, targetNs, endpoint, ts string) string {
+//
+// Field order is stable and MUST match the bridge worker's verification logic:
+//
+//	subject, systemRole, nsRoles, targetNs, endpoint, ts, cluster, nonce, authType
+//
+// cluster binds the attestation to the issuing cluster (prevents replay across
+// clusters that share the HMAC key). nonce is a per-request random value
+// (prevents replay within the timestamp acceptance window; the bridge worker
+// MUST maintain a seen-nonce cache sized to the window). authType tags the
+// auth mode that produced the subject (prevents subject collision between a
+// JWT user and a matching mTLS CN).
+func signedPayload(subject, systemRole, nsRoles, targetNs, endpoint, ts, cluster, nonce, authType string) string {
 	var b strings.Builder
-	b.Grow(len(subject) + len(systemRole) + len(nsRoles) + len(targetNs) + len(endpoint) + len(ts) + 48)
-	for _, f := range [...]string{subject, systemRole, nsRoles, targetNs, endpoint, ts} {
+	b.Grow(len(subject) + len(systemRole) + len(nsRoles) + len(targetNs) + len(endpoint) + len(ts) + len(cluster) + len(nonce) + len(authType) + 72)
+	for _, f := range [...]string{subject, systemRole, nsRoles, targetNs, endpoint, ts, cluster, nonce, authType} {
 		b.WriteString(strconv.Itoa(len(f)))
 		b.WriteByte(':')
 		b.WriteString(f)
 	}
 	return b.String()
+}
+
+// Auth-type tags embedded in signed attestations. Bridge-worker allowlists
+// MUST treat each value as a distinct subject namespace — an "mtls" subject
+// "host.example.com" is NOT equivalent to a "jwt" subject of the same string.
+const (
+	ddAuthTypeMTLS = "mtls"
+	ddAuthTypeJWT  = "jwt"
+)
+
+// inferAuthType is a best-effort classifier for the auth path that produced
+// the given claims. The DD claim mapper emits Claims{System: RoleAdmin,
+// Namespaces: nil} for internode and replication mTLS paths; JWT-backed user
+// claims populate Namespaces from the mapped domain grants. Anything that
+// doesn't match the mTLS pattern is treated as "jwt".
+//
+// This heuristic has a known false-positive: a JWT issued with admin scope
+// and zero domain grants would be mislabeled as mtls. The bridge worker MUST
+// defend against this by refusing to honor any "mtls" subject that is not on
+// its explicit CN allowlist; the auth_type tag is one input to that decision,
+// not a replacement for the allowlist. Returns "" for nil claims (anonymous).
+//
+// A proper fix — plumbing the real auth path out of the claim mapper — is
+// tracked as a follow-up and requires dd-source changes outside this fork.
+func inferAuthType(claims *authorization.Claims) string {
+	if claims == nil {
+		return ""
+	}
+	if claims.System == authorization.RoleAdmin && len(claims.Namespaces) == 0 {
+		return ddAuthTypeMTLS
+	}
+	return ddAuthTypeJWT
 }
 
 // encodeRole renders an authorization.Role bitmask as a deterministic, stable

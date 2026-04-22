@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nexus-rpc/sdk-go/nexus"
 	enumspb "go.temporal.io/api/enums/v1"
 	nexuspb "go.temporal.io/api/nexus/v1"
@@ -144,6 +145,34 @@ func (c *operationContext) interceptRequest(
 	request *matchingservice.DispatchNexusTaskRequest,
 	header nexus.Header,
 ) error {
+	// Strip attacker-supplied copies of every reserved x-dd-caller-* key. This
+	// runs BEFORE auth, rate limiting, and the namespace-not-active forward
+	// branch so that:
+	//
+	//   - Cross-cluster forwards (forwardStartOperation / forwardCancelOperation)
+	//     relay options.Header verbatim to the peer cluster; any forged
+	//     attestation must be removed before that relay happens.
+	//   - Anonymous or unauthenticated calls cannot smuggle a plausible-looking
+	//     but unsigned attestation past the frontend — strip is independent of
+	//     whether c.claims is populated.
+	//
+	// The server-issued STAMP runs later, after all validations pass, and only
+	// when c.claims is non-nil. Operators must not blacklist "x-dd-caller-*"
+	// in FrontendNexusRequestHeadersBlacklist — doing so would silently strip
+	// the stamped headers before they leave the frontend.
+	var ddSigner *ddCallerSigner
+	if c.ddSigner != nil {
+		ddSigner = c.ddSigner.Get()
+	}
+	if ddSigner != nil {
+		for _, k := range ddCallerHeaders {
+			delete(header, k)
+			if request.GetRequest() != nil {
+				delete(request.Request.Header, k)
+			}
+		}
+	}
+
 	err := c.auth.Authorize(ctx, c.claims, &authorization.CallTarget{
 		APIName:           c.apiName,
 		Namespace:         c.namespaceName,
@@ -222,52 +251,44 @@ func (c *operationContext) interceptRequest(
 		return converted
 	}
 
-	// Inject server-authenticated caller-identity headers for DD Nexus bridge
-	// workers. Runs after auth/authorize so c.claims reflects the verified
-	// caller. The signer is resolved per request from the cached dynamic
+	// Stamp server-authenticated caller-identity headers for the DD Nexus
+	// bridge worker. Runs after auth/authorize/rate-limit/version so c.claims
+	// reflects the verified caller and we don't spend HMAC cycles on requests
+	// that will be rejected. The signer is resolved from the cached dynamic
 	// config so operators can rotate the HMAC key without a restart.
 	//
-	// Strip semantics: whenever a signer is configured, attacker-supplied
-	// copies of every reserved x-dd-caller-* key are removed unconditionally
-	// — even when c.claims is nil (anonymous / no claim mapper) — because
-	// otherwise a hostile caller could smuggle a plausible-looking but
-	// unsigned attestation past the frontend to the bridge worker. The
-	// server-issued values are stamped only when c.claims and the request
-	// body are present; the HMAC binds subject/target/endpoint/ts so the
-	// attestation cannot be replayed across endpoints or target namespaces.
-	//
-	// Operators must not blacklist "x-dd-caller-*" in
-	// FrontendNexusRequestHeadersBlacklist — doing so would silently disable
-	// caller-identity delivery and the bridge would deny every request.
-	var ddSigner *ddCallerSigner
-	if c.ddSigner != nil {
-		ddSigner = c.ddSigner.Get()
-	}
-	if ddSigner != nil && request.GetRequest() != nil {
+	// The hoisted strip block at the top of this function has already removed
+	// any attacker-supplied x-dd-caller-* entries from both header maps, so
+	// the writes below always produce a clean attestation. The HMAC binds
+	// subject/role/ns/target/endpoint/ts/cluster/nonce/authType so the
+	// attestation cannot be replayed across endpoints, target namespaces,
+	// clusters, or within the bridge's timestamp acceptance window.
+	if ddSigner != nil && request.GetRequest() != nil && c.claims != nil {
 		hdr := request.Request.Header
 		if hdr == nil {
 			hdr = map[string]string{}
 			request.Request.Header = hdr
 		}
-		for _, k := range ddCallerHeaders {
-			delete(hdr, k)
-		}
-		if c.claims != nil {
-			subject := c.claims.Subject
-			systemRole := encodeRole(c.claims.System)
-			nsRoles := encodeNamespaceRoles(c.claims.Namespaces)
-			targetNs := c.namespaceName
-			endpoint := c.endpointName
-			ts := strconv.FormatInt(time.Now().Unix(), 10)
+		subject := c.claims.Subject
+		systemRole := encodeRole(c.claims.System)
+		nsRoles := encodeNamespaceRoles(c.claims.Namespaces)
+		targetNs := c.namespaceName
+		endpoint := c.endpointName
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		clusterName := c.clusterMetadata.GetCurrentClusterName()
+		nonce := uuid.NewString()
+		authType := inferAuthType(c.claims)
 
-			hdr[ddCallerSubjectHeader] = subject
-			hdr[ddCallerSystemRoleHeader] = systemRole
-			hdr[ddCallerNsRolesHeader] = nsRoles
-			hdr[ddCallerTargetNsHeader] = targetNs
-			hdr[ddCallerEndpointHeader] = endpoint
-			hdr[ddCallerTSHeader] = ts
-			hdr[ddCallerSigHeader] = ddSigner.Sign(signedPayload(subject, systemRole, nsRoles, targetNs, endpoint, ts))
-		}
+		hdr[ddCallerSubjectHeader] = subject
+		hdr[ddCallerSystemRoleHeader] = systemRole
+		hdr[ddCallerNsRolesHeader] = nsRoles
+		hdr[ddCallerTargetNsHeader] = targetNs
+		hdr[ddCallerEndpointHeader] = endpoint
+		hdr[ddCallerTSHeader] = ts
+		hdr[ddCallerClusterHeader] = clusterName
+		hdr[ddCallerNonceHeader] = nonce
+		hdr[ddCallerAuthTypeHeader] = authType
+		hdr[ddCallerSigHeader] = ddSigner.Sign(signedPayload(subject, systemRole, nsRoles, targetNs, endpoint, ts, clusterName, nonce, authType))
 	}
 
 	// THIS MUST BE THE LAST STEP IN interceptRequest.
