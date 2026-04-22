@@ -242,3 +242,68 @@ func TestInferAuthType_UndefinedRoleIsJWT(t *testing.T) {
 	claims := &authorization.Claims{Subject: "alice@datadog"}
 	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
 }
+
+type fakeAuthTypeExt struct{ tag string }
+
+func (f *fakeAuthTypeExt) DDAuthType() string { return f.tag }
+
+func TestInferAuthType_ExtensionOverridesHeuristic_MTLS(t *testing.T) {
+	// An extension-provided "mtls" tag must win even when the heuristic would
+	// have returned "jwt" (e.g. an mTLS identity that legitimately carries
+	// domain grants — a scenario the heuristic can't represent).
+	claims := &authorization.Claims{
+		Subject:    "workflow-worker.example.com",
+		System:     authorization.RoleWorker,
+		Namespaces: map[string]authorization.Role{"billing": authorization.RoleWorker},
+		Extensions: &fakeAuthTypeExt{tag: ddAuthTypeMTLS},
+	}
+	require.Equal(t, ddAuthTypeMTLS, inferAuthType(claims))
+}
+
+func TestInferAuthType_ExtensionOverridesHeuristic_JWT(t *testing.T) {
+	// An extension-provided "jwt" tag must win even when the heuristic would
+	// have returned "mtls" — this is the exact false-positive the extension
+	// exists to eliminate (admin JWT with no domain grants).
+	claims := &authorization.Claims{
+		Subject:    "alice@datadog",
+		System:     authorization.RoleAdmin,
+		Extensions: &fakeAuthTypeExt{tag: ddAuthTypeJWT},
+	}
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
+}
+
+func TestInferAuthType_EmptyExtensionFallsBackToHeuristic(t *testing.T) {
+	// An extension that returns "" (unknown auth path) must not silently blank
+	// out the attestation — the heuristic still runs so partial extensions
+	// don't regress coverage for deployments that haven't fully rolled out.
+	claims := &authorization.Claims{
+		Subject:    "internode.example.com",
+		System:     authorization.RoleAdmin,
+		Extensions: &fakeAuthTypeExt{tag: ""},
+	}
+	require.Equal(t, ddAuthTypeMTLS, inferAuthType(claims))
+}
+
+func TestInferAuthType_NonMatchingExtensionTypeFallsBackToHeuristic(t *testing.T) {
+	// An Extensions value that doesn't implement authTypeExtension at all
+	// (e.g. a struct from an older claim mapper) must not break the flow —
+	// the heuristic carries us.
+	claims := &authorization.Claims{
+		Subject:    "alice@datadog",
+		System:     authorization.RoleWriter,
+		Extensions: struct{ Other string }{Other: "ignored"},
+	}
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
+}
+
+func TestInferAuthType_ExtensionPassesThroughUnknownTag(t *testing.T) {
+	// A claim mapper that emits a new auth path the fork hasn't seen yet
+	// (e.g. "spiffe") must pass through verbatim — the signed payload is
+	// the bridge worker's source of truth, not the fork's knowledge of
+	// which tokens exist.
+	claims := &authorization.Claims{
+		Subject:    "spiffe://example/service",
+		Extensions: &fakeAuthTypeExt{tag: "spiffe"},
+	}
+	require.Equal(t, "spiffe", inferAuthType(claims))
+}

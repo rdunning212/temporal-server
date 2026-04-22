@@ -146,23 +146,44 @@ const (
 	ddAuthTypeJWT  = "jwt"
 )
 
-// inferAuthType is a best-effort classifier for the auth path that produced
-// the given claims. The DD claim mapper emits Claims{System: RoleAdmin,
-// Namespaces: nil} for internode and replication mTLS paths; JWT-backed user
-// claims populate Namespaces from the mapped domain grants. Anything that
-// doesn't match the mTLS pattern is treated as "jwt".
+// authTypeExtension is the narrow structural interface the fork uses to pull
+// the authenticated auth path out of Claims.Extensions when the claim mapper
+// supplies it. Defining the interface here (consumer side) keeps the fork
+// free of reverse imports back into dd-source: any Extensions value with a
+// DDAuthType() string method satisfies it, no explicit coupling required.
 //
-// This heuristic has a known false-positive: a JWT issued with admin scope
-// and zero domain grants would be mislabeled as mtls. The bridge worker MUST
-// defend against this by refusing to honor any "mtls" subject that is not on
-// its explicit CN allowlist; the auth_type tag is one input to that decision,
-// not a replacement for the allowlist. Returns "" for nil claims (anonymous).
+// Contract: implementations return "" when the auth path is unknown or the
+// receiver is nil. Any other returned value is treated as authoritative and
+// emitted verbatim onto the signed payload — implementations MUST return
+// pinned token strings ("jwt", "mtls") that the bridge worker recognizes.
+type authTypeExtension interface {
+	DDAuthType() string
+}
+
+// inferAuthType returns the auth-path tag for the given claims. It prefers an
+// explicit value from the claim mapper — surfaced via the authTypeExtension
+// interface on Claims.Extensions — and falls back to a best-effort heuristic
+// when no extension is present or it returns "".
 //
-// A proper fix — plumbing the real auth path out of the claim mapper — is
-// tracked as a follow-up and requires dd-source changes outside this fork.
+// The fallback heuristic exists because not every deployment that has adopted
+// this fork has also picked up the matching dd-source claim mapper change:
+// older claim mappers emit Claims{System: RoleAdmin, Namespaces: nil} for
+// internode and replication mTLS paths and populate Namespaces for
+// JWT-backed user claims. Anything that doesn't match the mTLS pattern is
+// treated as "jwt". This fallback has a known false-positive — a JWT with
+// admin scope and no domain grants will be mislabeled as mtls — which is
+// precisely why the bridge worker MUST refuse to honor any "mtls" subject
+// that is not on its explicit CN allowlist.
+//
+// Returns "" for nil claims (anonymous / pre-auth paths).
 func inferAuthType(claims *authorization.Claims) string {
 	if claims == nil {
 		return ""
+	}
+	if ext, ok := claims.Extensions.(authTypeExtension); ok {
+		if tag := ext.DDAuthType(); tag != "" {
+			return tag
+		}
 	}
 	if claims.System == authorization.RoleAdmin && len(claims.Namespaces) == 0 {
 		return ddAuthTypeMTLS
