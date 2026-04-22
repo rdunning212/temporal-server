@@ -890,6 +890,18 @@ used when the first cache layer has a miss. Requires server restart for change t
 		`Nexus request headers to be removed before being sent to a user handler.
 Wildcards (*) are expanded to allow any substring. By default blacklist is empty.`,
 	)
+	FrontendNexusDDCallerHmacKey = NewGlobalStringSetting(
+		"frontend.nexusDDCallerHmacKey",
+		"",
+		`Base64-encoded HMAC-SHA256 key used by the frontend to sign caller-identity
+headers injected onto outbound Nexus task dispatches. Accepts standard and
+URL-safe alphabets, padded or unpadded. Keys shorter than 32 bytes are rejected.
+
+The default empty value disables injection and no caller-identity headers are
+emitted. Rotating to a malformed or too-short key preserves the previously
+cached signer (fail-open-on-bad-rotation); operators who want to disable
+injection at runtime must rotate to the empty string.`,
+	)
 	FrontendCallbackURLMaxLength = NewNamespaceIntSetting(
 		"frontend.callbackURLMaxLength",
 		1000,

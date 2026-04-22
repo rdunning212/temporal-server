@@ -91,6 +91,7 @@ func NewNexusHTTPHandler(
 				headersBlacklist:              serviceConfig.NexusRequestHeadersBlacklist,
 				metricTagConfig:               serviceConfig.NexusOperationsMetricTagConfig,
 				httpTraceProvider:             httpTraceProvider,
+				ddSigner:                      serviceConfig.NexusDDCallerSigner,
 			},
 			GetResultTimeout: serviceConfig.KeepAliveMaxConnectionIdle(),
 			Logger:           log.NewSlogLogger(logger),
