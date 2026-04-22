@@ -153,9 +153,10 @@ const (
 // DDAuthType() string method satisfies it, no explicit coupling required.
 //
 // Contract: implementations return "" when the auth path is unknown or the
-// receiver is nil. Any other returned value is treated as authoritative and
-// emitted verbatim onto the signed payload — implementations MUST return
-// pinned token strings ("jwt", "mtls") that the bridge worker recognizes.
+// receiver is nil. Implementations MUST return one of the pinned tokens
+// ("jwt", "mtls") when asserting an auth path — the fork rejects any other
+// value as defense-in-depth against a buggy or compromised claim mapper and
+// falls back to the heuristic, which cannot emit an out-of-set tag either.
 type authTypeExtension interface {
 	DDAuthType() string
 }
@@ -163,7 +164,8 @@ type authTypeExtension interface {
 // inferAuthType returns the auth-path tag for the given claims. It prefers an
 // explicit value from the claim mapper — surfaced via the authTypeExtension
 // interface on Claims.Extensions — and falls back to a best-effort heuristic
-// when no extension is present or it returns "".
+// when no extension is present, the extension returns "", or the extension
+// returns a value outside the pinned token set.
 //
 // The fallback heuristic exists because not every deployment that has adopted
 // this fork has also picked up the matching dd-source claim mapper change:
@@ -181,9 +183,14 @@ func inferAuthType(claims *authorization.Claims) string {
 		return ""
 	}
 	if ext, ok := claims.Extensions.(authTypeExtension); ok {
-		if tag := ext.DDAuthType(); tag != "" {
-			return tag
+		switch ext.DDAuthType() {
+		case ddAuthTypeMTLS, ddAuthTypeJWT:
+			return ext.DDAuthType()
 		}
+		// Any other value — including "" and unknown tokens — falls through
+		// to the heuristic. This prevents a compromised claim mapper from
+		// smuggling an attacker-chosen auth-type label into the signed
+		// payload and out to the bridge worker.
 	}
 	if claims.System == authorization.RoleAdmin && len(claims.Namespaces) == 0 {
 		return ddAuthTypeMTLS

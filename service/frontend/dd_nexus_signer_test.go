@@ -296,14 +296,29 @@ func TestInferAuthType_NonMatchingExtensionTypeFallsBackToHeuristic(t *testing.T
 	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims))
 }
 
-func TestInferAuthType_ExtensionPassesThroughUnknownTag(t *testing.T) {
-	// A claim mapper that emits a new auth path the fork hasn't seen yet
-	// (e.g. "spiffe") must pass through verbatim — the signed payload is
-	// the bridge worker's source of truth, not the fork's knowledge of
-	// which tokens exist.
+func TestInferAuthType_ExtensionRejectsUnknownTag_FallsBackToHeuristic(t *testing.T) {
+	// Defense in depth: a compromised or buggy claim mapper that returns
+	// an arbitrary string (e.g. "spiffe", or attacker-chosen garbage) must
+	// not be able to smuggle that value into the signed payload. The fork
+	// rejects anything outside {"jwt","mtls"} and falls through to the
+	// heuristic, which itself cannot emit an out-of-set tag.
 	claims := &authorization.Claims{
 		Subject:    "spiffe://example/service",
+		System:     authorization.RoleWriter,
 		Extensions: &fakeAuthTypeExt{tag: "spiffe"},
 	}
-	require.Equal(t, "spiffe", inferAuthType(claims))
+	require.Equal(t, ddAuthTypeJWT, inferAuthType(claims),
+		"unknown extension tag must be rejected and the heuristic applied")
+}
+
+func TestInferAuthType_ExtensionRejectsUnknownTag_HeuristicYieldsMTLS(t *testing.T) {
+	// Same rejection path, but the claims also happen to look like an
+	// internode mTLS subject. The heuristic's MTLS result is the final
+	// answer — the extension's out-of-set tag is silently ignored.
+	claims := &authorization.Claims{
+		Subject:    "internode.example.com",
+		System:     authorization.RoleAdmin,
+		Extensions: &fakeAuthTypeExt{tag: "attacker-chosen"},
+	}
+	require.Equal(t, ddAuthTypeMTLS, inferAuthType(claims))
 }
